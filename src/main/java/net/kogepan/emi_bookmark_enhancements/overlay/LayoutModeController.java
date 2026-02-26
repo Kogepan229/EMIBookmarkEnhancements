@@ -50,10 +50,12 @@ public final class LayoutModeController {
         ensureLoaded();
         LayoutMode safeMode = mode == null ? LayoutMode.HORIZONTAL : mode;
         if (safeMode == currentMode) {
+            EmiRuntimeAccess.applyVerticalFavoritesRowPolicy(safeMode == LayoutMode.VERTICAL);
             return;
         }
         currentMode = safeMode;
         dirty = true;
+        EmiRuntimeAccess.applyVerticalFavoritesRowPolicy(safeMode == LayoutMode.VERTICAL);
         EmiRuntimeAccess.refreshFavoritesSidebar();
     }
 
@@ -72,6 +74,7 @@ public final class LayoutModeController {
         currentMode = mode;
         loaded = true;
         dirty = false;
+        EmiRuntimeAccess.applyVerticalFavoritesRowPolicy(mode == LayoutMode.VERTICAL);
     }
 
     public static void save() {

@@ -8,8 +8,12 @@ import net.kogepan.emi_bookmark_enhancements.EmiBookmarkEnhancements;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 public final class EmiRuntimeAccess {
     private static final String EMI_FAVORITES_CLASS = "dev.emi.emi.runtime.EmiFavorites";
@@ -62,10 +66,17 @@ public final class EmiRuntimeAccess {
     private static Object favoritesSidebarType;
     private static Method forceRecalculateMethod;
     private static Field leftSidebarMarginsField;
+    private static Field leftSidebarSizeField;
+    private static Field rightSidebarSizeField;
+    private static Field topSidebarSizeField;
+    private static Field bottomSidebarSizeField;
+    private static Field sidebarPanelSideField;
     private static Field intGroupValuesField;
     private static boolean sidebarInsetLookupFailed;
+    private static boolean sidebarColumnsLookupFailed;
     private static int baseLeftSidebarMargin = Integer.MIN_VALUE;
     private static int appliedLeftSidebarInset;
+    private static final Map<String, Integer> baseSidebarColumns = new HashMap<>();
 
     private EmiRuntimeAccess() {
     }
@@ -387,6 +398,80 @@ public final class EmiRuntimeAccess {
         }
     }
 
+    public static boolean applyVerticalFavoritesRowPolicy(boolean verticalMode) {
+        return applyVerticalFavoritesRowPolicy(verticalMode, Integer.MAX_VALUE);
+    }
+
+    public static boolean applyVerticalFavoritesRowPolicy(boolean verticalMode, int preferredColumns) {
+        if (!resolveSidebarColumnsHandles()) {
+            return false;
+        }
+
+        boolean changed = false;
+        try {
+            if (verticalMode) {
+                Set<String> favoriteSides = detectVisibleFavoriteSides();
+                if (favoriteSides.isEmpty()) {
+                    favoriteSides = Set.of("LEFT");
+                }
+
+                for (String side : favoriteSides) {
+                    int baseColumns = ensureBaseSidebarColumns(side);
+                    int targetColumns = Math.max(1, Math.min(baseColumns, preferredColumns));
+                    changed |= setSidebarColumns(side, targetColumns, true);
+                }
+
+                Set<String> knownSides = new LinkedHashSet<>(baseSidebarColumns.keySet());
+                for (String side : knownSides) {
+                    if (!favoriteSides.contains(side)) {
+                        changed |= restoreSidebarColumns(side);
+                    }
+                }
+            } else {
+                Set<String> knownSides = new LinkedHashSet<>(baseSidebarColumns.keySet());
+                for (String side : knownSides) {
+                    changed |= restoreSidebarColumns(side);
+                }
+            }
+            if (changed) {
+                forceRecalculateMethod.invoke(null);
+            }
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to apply favorites vertical row policy", e);
+            return false;
+        }
+        return changed;
+    }
+
+    public static int getFavoritesSidebarBaseColumns() {
+        if (!resolveSidebarColumnsHandles()) {
+            return 1;
+        }
+        try {
+            Set<String> favoriteSides = detectVisibleFavoriteSides();
+            if (favoriteSides.isEmpty()) {
+                if (baseSidebarColumns.isEmpty()) {
+                    return 1;
+                }
+                int min = Integer.MAX_VALUE;
+                for (int value : baseSidebarColumns.values()) {
+                    min = Math.min(min, Math.max(1, value));
+                }
+                return min == Integer.MAX_VALUE ? 1 : min;
+            }
+
+            int min = Integer.MAX_VALUE;
+            for (String side : favoriteSides) {
+                int baseColumns = ensureBaseSidebarColumns(side);
+                min = Math.min(min, Math.max(1, baseColumns));
+            }
+            return min == Integer.MAX_VALUE ? 1 : min;
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve favorites sidebar base columns", e);
+            return 1;
+        }
+    }
+
     private static boolean resolveRuntimeHandles() {
         if (favoritesField != null && hoveredStackMethod != null && lastMouseXField != null && lastMouseYField != null) {
             return true;
@@ -556,6 +641,192 @@ public final class EmiRuntimeAccess {
             EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve EMI sidebar inset handles", e);
             return false;
         }
+    }
+
+    private static boolean resolveSidebarColumnsHandles() {
+        if (leftSidebarSizeField != null
+                && rightSidebarSizeField != null
+                && topSidebarSizeField != null
+                && bottomSidebarSizeField != null
+                && sidebarPanelSideField != null
+                && intGroupValuesField != null
+                && forceRecalculateMethod != null) {
+            return true;
+        }
+        if (sidebarColumnsLookupFailed) {
+            return false;
+        }
+        try {
+            if (!resolveSidebarHandles()) {
+                return false;
+            }
+            Class<?> configClass = Class.forName(EMI_CONFIG_CLASS);
+            Class<?> intGroupClass = Class.forName("dev.emi.emi.config.IntGroup");
+            Class<?> screenManagerClass = Class.forName(EMI_SCREEN_MANAGER_CLASS);
+
+            leftSidebarSizeField = configClass.getField("leftSidebarSize");
+            rightSidebarSizeField = configClass.getField("rightSidebarSize");
+            topSidebarSizeField = configClass.getField("topSidebarSize");
+            bottomSidebarSizeField = configClass.getField("bottomSidebarSize");
+            sidebarPanelSideField = sidebarPanelClass.getField("side");
+            if (intGroupValuesField == null) {
+                intGroupValuesField = intGroupClass.getField("values");
+            }
+            if (forceRecalculateMethod == null) {
+                forceRecalculateMethod = screenManagerClass.getMethod("forceRecalculate");
+            }
+            return true;
+        } catch (Exception e) {
+            sidebarColumnsLookupFailed = true;
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve EMI sidebar column handles", e);
+            return false;
+        }
+    }
+
+    private static Set<String> detectVisibleFavoriteSides() {
+        if (!resolveSidebarHandles()) {
+            return Set.of();
+        }
+        try {
+            Object value = panelsField.get(null);
+            if (!(value instanceof List<?> panels)) {
+                return Set.of();
+            }
+            Set<String> sides = new LinkedHashSet<>();
+            for (Object panel : panels) {
+                if (panel == null || !sidebarPanelClass.isInstance(panel)) {
+                    continue;
+                }
+                boolean visible = (boolean) sidebarPanelIsVisibleMethod.invoke(panel);
+                if (!visible) {
+                    continue;
+                }
+                Object space = sidebarPanelSpaceField.get(panel);
+                if (space == null || !screenSpaceClass.isInstance(space)) {
+                    continue;
+                }
+                Object type = screenSpaceGetTypeMethod.invoke(space);
+                if (type == null || !"FAVORITES".equals(type.toString())) {
+                    continue;
+                }
+                Object side = sidebarPanelSideField.get(panel);
+                if (side != null) {
+                    sides.add(side.toString());
+                }
+            }
+            return sides;
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to detect favorites sidebar side", e);
+            return Set.of();
+        }
+    }
+
+    private static boolean setSidebarColumns(String side, int columns, boolean rememberBase) throws IllegalAccessException {
+        Field sizeField = sizeFieldForSide(side);
+        if (sizeField == null) {
+            return false;
+        }
+        Object sizeGroup = sizeField.get(null);
+        if (sizeGroup == null) {
+            return false;
+        }
+        Object valuesObj = intGroupValuesField.get(sizeGroup);
+        if (!(valuesObj instanceof List<?> values) || values.isEmpty()) {
+            return false;
+        }
+        Object columnValue = values.get(0);
+        if (!(columnValue instanceof Number currentNumber)) {
+            return false;
+        }
+        int current = currentNumber.intValue();
+        if (rememberBase) {
+            baseSidebarColumns.putIfAbsent(side, current);
+        }
+        int safeColumns = Math.max(1, columns);
+        if (current == safeColumns) {
+            return false;
+        }
+        @SuppressWarnings("unchecked")
+        List<Object> mutableValues = (List<Object>) values;
+        mutableValues.set(0, safeColumns);
+        return true;
+    }
+
+    private static int ensureBaseSidebarColumns(String side) throws IllegalAccessException {
+        Integer base = baseSidebarColumns.get(side);
+        if (base != null) {
+            return Math.max(1, base);
+        }
+        int current = readSidebarColumns(side);
+        int safe = Math.max(1, current);
+        baseSidebarColumns.put(side, safe);
+        return safe;
+    }
+
+    private static int readSidebarColumns(String side) throws IllegalAccessException {
+        Field sizeField = sizeFieldForSide(side);
+        if (sizeField == null) {
+            return 1;
+        }
+        Object sizeGroup = sizeField.get(null);
+        if (sizeGroup == null) {
+            return 1;
+        }
+        Object valuesObj = intGroupValuesField.get(sizeGroup);
+        if (!(valuesObj instanceof List<?> values) || values.isEmpty()) {
+            return 1;
+        }
+        Object columnValue = values.get(0);
+        if (columnValue instanceof Number currentNumber) {
+            return currentNumber.intValue();
+        }
+        return 1;
+    }
+
+    private static boolean restoreSidebarColumns(String side) throws IllegalAccessException {
+        Integer base = baseSidebarColumns.get(side);
+        if (base == null) {
+            return false;
+        }
+        boolean changed = setSidebarColumns(side, base, false);
+        if (changed) {
+            baseSidebarColumns.remove(side);
+            return true;
+        }
+
+        Field sizeField = sizeFieldForSide(side);
+        if (sizeField == null) {
+            baseSidebarColumns.remove(side);
+            return false;
+        }
+        Object sizeGroup = sizeField.get(null);
+        if (sizeGroup == null) {
+            baseSidebarColumns.remove(side);
+            return false;
+        }
+        Object valuesObj = intGroupValuesField.get(sizeGroup);
+        if (!(valuesObj instanceof List<?> values) || values.isEmpty()) {
+            baseSidebarColumns.remove(side);
+            return false;
+        }
+        Object columnValue = values.get(0);
+        if (columnValue instanceof Number currentNumber && currentNumber.intValue() == base) {
+            baseSidebarColumns.remove(side);
+        }
+        return false;
+    }
+
+    private static Field sizeFieldForSide(String side) {
+        if (side == null) {
+            return null;
+        }
+        return switch (side) {
+            case "LEFT" -> leftSidebarSizeField;
+            case "RIGHT" -> rightSidebarSizeField;
+            case "TOP" -> topSidebarSizeField;
+            case "BOTTOM" -> bottomSidebarSizeField;
+            default -> null;
+        };
     }
 
     private static final class SetByIdentity<T> {

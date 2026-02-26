@@ -125,6 +125,10 @@ public final class GroupPanelController {
         if (bookmarkManager == null || !LayoutModeController.isVerticalMode()) {
             return;
         }
+        int preferredColumns = determinePreferredVerticalColumns();
+        if (EmiRuntimeAccess.applyVerticalFavoritesRowPolicy(true, preferredColumns)) {
+            return;
+        }
         FavoriteGridSnapshot grid = captureGridSnapshot();
         if (grid == null) {
             return;
@@ -136,7 +140,7 @@ public final class GroupPanelController {
             EmiRuntimeAccess.ensureFavoritesSidebarInset(requiredInset, grid.gridLeft());
         }
 
-        List<Integer> rowGroupIds = grid.getPrimaryGroupIds();
+        List<Integer> rowGroupIds = grid.getDisplayGroupIds();
         if (dragState != null) {
             applyDragPreview(rowGroupIds, grid);
         }
@@ -185,6 +189,67 @@ public final class GroupPanelController {
                 GroupBracketRenderer.HOVER_HIGHLIGHT_COLOR);
     }
 
+    private static int determinePreferredVerticalColumns() {
+        int maxColumns = Math.max(1, EmiRuntimeAccess.getFavoritesSidebarBaseColumns());
+        List<Object> favoriteHandles = EmiRuntimeAccess.getFavoriteHandles();
+        if (favoriteHandles.isEmpty()) {
+            return maxColumns;
+        }
+        if (maxColumns == 1) {
+            return 1;
+        }
+
+        List<Integer> boundaries = new ArrayList<>();
+        EmiBookmarkEntry previousEntry = resolveHandleEntry(favoriteHandles.get(0));
+        int previousGroupId = resolveEntryGroupId(previousEntry);
+        for (int index = 1; index < favoriteHandles.size(); index++) {
+            EmiBookmarkEntry currentEntry = resolveHandleEntry(favoriteHandles.get(index));
+            int groupId = resolveEntryGroupId(currentEntry);
+            if (groupId != previousGroupId || isRecipeBoundary(previousEntry, currentEntry)) {
+                boundaries.add(index);
+            }
+            previousEntry = currentEntry;
+            previousGroupId = groupId;
+        }
+        if (boundaries.isEmpty()) {
+            return maxColumns;
+        }
+
+        for (int columns = maxColumns; columns >= 2; columns--) {
+            if (isBoundaryAligned(boundaries, columns)) {
+                return columns;
+            }
+        }
+        return 1;
+    }
+
+    private static EmiBookmarkEntry resolveHandleEntry(Object favoriteHandle) {
+        return bookmarkManager.findEntry(favoriteHandle);
+    }
+
+    private static int resolveEntryGroupId(EmiBookmarkEntry entry) {
+        if (entry == null) {
+            return EmiBookmarkManager.DEFAULT_GROUP_ID;
+        }
+        return entry.getGroupId();
+    }
+
+    private static boolean isRecipeBoundary(EmiBookmarkEntry previousEntry, EmiBookmarkEntry currentEntry) {
+        return previousEntry != null
+                && currentEntry != null
+                && currentEntry.getGroupId() == previousEntry.getGroupId()
+                && currentEntry.isResult();
+    }
+
+    private static boolean isBoundaryAligned(List<Integer> boundaries, int columns) {
+        for (int boundary : boundaries) {
+            if (boundary % columns != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static boolean includeRowsInGroup(int minRow, int maxRow, FavoriteGridSnapshot grid) {
         List<EmiBookmarkEntry> selectedEntries = grid.collectUniqueEntries(minRow, maxRow);
         if (selectedEntries.isEmpty()) {
@@ -227,7 +292,7 @@ public final class GroupPanelController {
     }
 
     private static boolean toggleCraftingChainAtRow(int row, FavoriteGridSnapshot grid) {
-        int groupId = grid.getPrimaryGroupId(row);
+        int groupId = grid.getUniformNonDefaultGroupId(row);
         if (groupId == EmiBookmarkManager.DEFAULT_GROUP_ID) {
             return false;
         }
@@ -392,26 +457,31 @@ public final class GroupPanelController {
             return entries;
         }
 
-        int getPrimaryGroupId(int rowIndex) {
+        int getUniformNonDefaultGroupId(int rowIndex) {
             if (rowIndex < 0 || rowIndex >= rows.size()) {
                 return EmiBookmarkManager.DEFAULT_GROUP_ID;
             }
+            int detectedGroupId = EmiBookmarkManager.DEFAULT_GROUP_ID;
             for (RowCell cell : rows.get(rowIndex).cells()) {
                 int groupId = cell.entry().getGroupId();
-                if (groupId != EmiBookmarkManager.DEFAULT_GROUP_ID) {
-                    return groupId;
+                if (groupId == EmiBookmarkManager.DEFAULT_GROUP_ID) {
+                    continue;
+                }
+                if (detectedGroupId == EmiBookmarkManager.DEFAULT_GROUP_ID) {
+                    detectedGroupId = groupId;
+                    continue;
+                }
+                if (detectedGroupId != groupId) {
+                    return EmiBookmarkManager.DEFAULT_GROUP_ID;
                 }
             }
-            if (!rows.get(rowIndex).cells().isEmpty()) {
-                return rows.get(rowIndex).cells().get(0).entry().getGroupId();
-            }
-            return EmiBookmarkManager.DEFAULT_GROUP_ID;
+            return detectedGroupId;
         }
 
-        List<Integer> getPrimaryGroupIds() {
+        List<Integer> getDisplayGroupIds() {
             List<Integer> groupIds = new ArrayList<>(rows.size());
             for (int row = 0; row < rows.size(); row++) {
-                groupIds.add(getPrimaryGroupId(row));
+                groupIds.add(getUniformNonDefaultGroupId(row));
             }
             return groupIds;
         }
