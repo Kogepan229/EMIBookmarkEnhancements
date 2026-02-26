@@ -208,6 +208,7 @@ public final class EmiBookmarkManager {
 
         Set<Object> activeHandles = Collections.newSetFromMap(new IdentityHashMap<>());
         List<EmiBookmarkEntry> orderedEntries = new ArrayList<>(safeFavorites.size());
+        List<EmiBookmarkEntry> availableEntries = new ArrayList<>(entries);
 
         for (FavoriteHandleData favorite : safeFavorites) {
             if (favorite == null || favorite.handle() == null || favorite.itemKey() == null || favorite.itemKey().isBlank()) {
@@ -215,18 +216,26 @@ public final class EmiBookmarkManager {
             }
             activeHandles.add(favorite.handle());
             EmiBookmarkEntry entry = favoriteBindings.get(favorite.handle());
-            if (!isCompatible(entry, favorite)) {
+            boolean reusedBoundEntry = isCompatible(entry, favorite) && availableEntries.remove(entry);
+            if (!reusedBoundEntry) {
                 int targetGroupId = DEFAULT_GROUP_ID;
                 EmiBookmarkEntry.EntryType targetType = favorite.type();
                 if (entry != null) {
                     targetGroupId = entry.getGroupId();
                     targetType = entry.getType();
                     entries.remove(entry);
+                    availableEntries.remove(entry);
                 }
-                entry = createManagedEntry(targetGroupId, favorite.itemKey(), favorite.factor(), targetType);
-                entries.add(entry);
+                EmiBookmarkEntry reboundEntry = findRebindCandidate(availableEntries, favorite);
+                if (reboundEntry != null) {
+                    entry = reboundEntry;
+                    availableEntries.remove(reboundEntry);
+                } else {
+                    entry = createManagedEntry(targetGroupId, favorite.itemKey(), favorite.factor(), targetType);
+                    entries.add(entry);
+                    dirty = true;
+                }
                 favoriteBindings.put(favorite.handle(), entry);
-                dirty = true;
             }
             orderedEntries.add(entry);
         }
@@ -585,6 +594,44 @@ public final class EmiBookmarkManager {
         }
         return entries.contains(existing)
                 && existing.getItemKey().equals(favorite.itemKey());
+    }
+
+    private EmiBookmarkEntry findRebindCandidate(List<EmiBookmarkEntry> availableEntries, FavoriteHandleData favorite) {
+        EmiBookmarkEntry strict = findRebindCandidate(availableEntries, favorite, true);
+        if (strict != null) {
+            return strict;
+        }
+        return findRebindCandidate(availableEntries, favorite, false);
+    }
+
+    private static EmiBookmarkEntry findRebindCandidate(List<EmiBookmarkEntry> availableEntries,
+                                                        FavoriteHandleData favorite,
+                                                        boolean strictFactor) {
+        for (EmiBookmarkEntry candidate : availableEntries) {
+            if (isRebindCompatible(candidate, favorite, strictFactor)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isRebindCompatible(EmiBookmarkEntry candidate,
+                                              FavoriteHandleData favorite,
+                                              boolean strictFactor) {
+        if (candidate == null) {
+            return false;
+        }
+        if (!candidate.getItemKey().equals(favorite.itemKey())) {
+            return false;
+        }
+        if (strictFactor && candidate.getFactor() != favorite.factor()) {
+            return false;
+        }
+        return switch (favorite.type()) {
+            case RESULT -> candidate.isResult();
+            case INGREDIENT -> candidate.isIngredient();
+            case ITEM -> !candidate.isResult();
+        };
     }
 
     private List<EmiBookmarkEntry> getRecipeUnitEntries(EmiBookmarkEntry resultEntry) {
