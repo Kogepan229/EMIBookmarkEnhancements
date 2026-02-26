@@ -50,6 +50,19 @@ public final class EmiFavoritesBridge {
         }
         lastSignature = signature;
 
+        List<EmiBookmarkManager.FavoriteHandleData> synchronizedFavorites = toFavoriteHandleData(favorites);
+        EmiBookmarkManager.FavoriteSyncResult syncResult = bookmarkManager.synchronizeFavorites(synchronizedFavorites);
+        if (!syncResult.handlesToPrune().isEmpty()) {
+            int removed = EmiRuntimeAccess.removeFavoriteHandles(syncResult.handlesToPrune());
+            if (removed > 0) {
+                List<Object> refreshedFavorites = EmiRuntimeAccess.getFavoriteHandles();
+                lastSignature = computeSignature(refreshedFavorites);
+                bookmarkManager.synchronizeFavorites(toFavoriteHandleData(refreshedFavorites));
+            }
+        }
+    }
+
+    private static List<EmiBookmarkManager.FavoriteHandleData> toFavoriteHandleData(List<Object> favorites) {
         List<EmiBookmarkManager.FavoriteHandleData> synchronizedFavorites = new ArrayList<>(favorites.size());
         for (Object favoriteHandle : favorites) {
             if (!(favoriteHandle instanceof EmiIngredient ingredient) || ingredient.isEmpty()) {
@@ -68,7 +81,7 @@ public final class EmiFavoritesBridge {
             synchronizedFavorites.add(new EmiBookmarkManager.FavoriteHandleData(
                     favoriteHandle, itemKey, factor, type));
         }
-        bookmarkManager.synchronizeFavorites(synchronizedFavorites);
+        return synchronizedFavorites;
     }
 
     private static long computeSignature(List<Object> favorites) {

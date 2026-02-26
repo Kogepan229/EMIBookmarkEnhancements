@@ -149,12 +149,14 @@ public final class EmiBookmarkManager {
         ensureLoaded();
         ensureGroupExists(groupId);
 
-        if (!allowDuplicates) {
+        if (favoriteHandle != null) {
+            EmiBookmarkEntry bound = favoriteBindings.get(favoriteHandle);
+            if (bound != null && entries.contains(bound)) {
+                return bound;
+            }
+        } else if (!allowDuplicates) {
             EmiBookmarkEntry existing = findEntry(groupId, itemKey, type);
             if (existing != null) {
-                if (favoriteHandle != null) {
-                    favoriteBindings.put(favoriteHandle, existing);
-                }
                 return existing;
             }
         }
@@ -199,7 +201,7 @@ public final class EmiBookmarkManager {
         favoriteBindings.clear();
     }
 
-    public synchronized void synchronizeFavorites(List<FavoriteHandleData> favorites) {
+    public synchronized FavoriteSyncResult synchronizeFavorites(List<FavoriteHandleData> favorites) {
         ensureLoaded();
         List<FavoriteHandleData> safeFavorites = favorites == null ? List.of() : favorites;
 
@@ -213,10 +215,14 @@ public final class EmiBookmarkManager {
             activeHandles.add(favorite.handle());
             EmiBookmarkEntry entry = favoriteBindings.get(favorite.handle());
             if (!isCompatible(entry, favorite)) {
+                int targetGroupId = DEFAULT_GROUP_ID;
+                EmiBookmarkEntry.EntryType targetType = favorite.type();
                 if (entry != null) {
+                    targetGroupId = entry.getGroupId();
+                    targetType = entry.getType();
                     entries.remove(entry);
                 }
-                entry = createManagedEntry(DEFAULT_GROUP_ID, favorite.itemKey(), favorite.factor(), favorite.type());
+                entry = createManagedEntry(targetGroupId, favorite.itemKey(), favorite.factor(), targetType);
                 entries.add(entry);
                 favoriteBindings.put(favorite.handle(), entry);
                 dirty = true;
@@ -224,24 +230,54 @@ public final class EmiBookmarkManager {
             orderedEntries.add(entry);
         }
 
-        List<EmiBookmarkEntry> removed = new ArrayList<>();
+        Set<EmiBookmarkEntry> removedEntries = Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<EmiBookmarkEntry> removedResults = Collections.newSetFromMap(new IdentityHashMap<>());
         favoriteBindings.entrySet().removeIf(binding -> {
             if (!activeHandles.contains(binding.getKey())) {
-                removed.add(binding.getValue());
+                EmiBookmarkEntry removedEntry = binding.getValue();
+                removedEntries.add(removedEntry);
+                if (removedEntry != null && removedEntry.isResult()) {
+                    removedResults.add(removedEntry);
+                }
                 return true;
             }
             return false;
         });
 
-        if (!removed.isEmpty()) {
-            entries.removeIf(removed::contains);
-            for (EmiBookmarkEntry entry : removed) {
+        Set<Object> handlesToPrune = Collections.newSetFromMap(new IdentityHashMap<>());
+        if (!removedResults.isEmpty()) {
+            Set<EmiBookmarkEntry> additionalEntries = Collections.newSetFromMap(new IdentityHashMap<>());
+            for (EmiBookmarkEntry removedResult : removedResults) {
+                for (EmiBookmarkEntry recipeEntry : getRecipeUnitEntries(removedResult)) {
+                    if (recipeEntry != removedResult) {
+                        additionalEntries.add(recipeEntry);
+                    }
+                }
+            }
+            additionalEntries.removeAll(removedEntries);
+            if (!additionalEntries.isEmpty()) {
+                favoriteBindings.entrySet().removeIf(binding -> {
+                    if (additionalEntries.contains(binding.getValue())) {
+                        handlesToPrune.add(binding.getKey());
+                        removedEntries.add(binding.getValue());
+                        return true;
+                    }
+                    return false;
+                });
+                removedEntries.addAll(additionalEntries);
+            }
+        }
+
+        if (!removedEntries.isEmpty()) {
+            entries.removeIf(removedEntries::contains);
+            for (EmiBookmarkEntry entry : removedEntries) {
                 cleanupEmptyGroup(entry.getGroupId());
             }
             dirty = true;
         }
 
         reorderEntries(orderedEntries);
+        return new FavoriteSyncResult(new ArrayList<>(handlesToPrune), removedEntries.size());
     }
 
     public synchronized boolean removeEntry(EmiBookmarkEntry entry) {
@@ -409,6 +445,34 @@ public final class EmiBookmarkManager {
                 && existing.getItemKey().equals(favorite.itemKey());
     }
 
+    private List<EmiBookmarkEntry> getRecipeUnitEntries(EmiBookmarkEntry resultEntry) {
+        if (resultEntry == null || !resultEntry.isResult()) {
+            return List.of();
+        }
+        int index = entries.indexOf(resultEntry);
+        if (index < 0) {
+            return List.of(resultEntry);
+        }
+        int groupId = resultEntry.getGroupId();
+        List<EmiBookmarkEntry> unitEntries = new ArrayList<>();
+        unitEntries.add(resultEntry);
+        for (int i = index + 1; i < entries.size(); i++) {
+            EmiBookmarkEntry entry = entries.get(i);
+            if (entry.getGroupId() != groupId) {
+                break;
+            }
+            if (entry.isResult() || entry.getType() == EmiBookmarkEntry.EntryType.ITEM) {
+                break;
+            }
+            if (entry.isIngredient()) {
+                unitEntries.add(entry);
+                continue;
+            }
+            break;
+        }
+        return unitEntries;
+    }
+
     private void reorderEntries(List<EmiBookmarkEntry> orderedEntries) {
         Set<EmiBookmarkEntry> orderedSet = Collections.newSetFromMap(new IdentityHashMap<>());
         orderedSet.addAll(orderedEntries);
@@ -466,6 +530,12 @@ public final class EmiBookmarkManager {
         public FavoriteHandleData {
             factor = Math.max(1L, factor);
             type = type == null ? EmiBookmarkEntry.EntryType.ITEM : type;
+        }
+    }
+
+    public record FavoriteSyncResult(List<Object> handlesToPrune, int removedEntryCount) {
+        public FavoriteSyncResult {
+            handlesToPrune = handlesToPrune == null ? List.of() : List.copyOf(handlesToPrune);
         }
     }
 }

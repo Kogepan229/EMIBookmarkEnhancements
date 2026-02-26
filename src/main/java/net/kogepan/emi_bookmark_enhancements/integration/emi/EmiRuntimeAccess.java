@@ -19,6 +19,8 @@ public final class EmiRuntimeAccess {
     private static final String EMI_WIDGET_GROUP_CLASS = "dev.emi.emi.screen.WidgetGroup";
     private static final String EMI_SIDEBAR_PANEL_CLASS = "dev.emi.emi.screen.EmiScreenManager$SidebarPanel";
     private static final String EMI_SCREEN_SPACE_CLASS = "dev.emi.emi.screen.EmiScreenManager$ScreenSpace";
+    private static final String EMI_SIDEBAR_TYPE_CLASS = "dev.emi.emi.config.SidebarType";
+    private static final String EMI_PERSISTENT_DATA_CLASS = "dev.emi.emi.runtime.EmiPersistentData";
 
     private static Field favoritesField;
     private static Field lastMouseXField;
@@ -29,6 +31,7 @@ public final class EmiRuntimeAccess {
     private static boolean unavailableLogged;
     private static boolean recipeLookupFailed;
     private static boolean sidebarLookupFailed;
+    private static boolean mutationLookupFailed;
 
     private static Class<?> recipeScreenClass;
     private static Class<?> widgetGroupClass;
@@ -50,6 +53,9 @@ public final class EmiRuntimeAccess {
     private static Method screenSpaceGetStacksMethod;
     private static Method screenSpaceGetRawXMethod;
     private static Method screenSpaceGetRawYMethod;
+    private static Method repopulatePanelsMethod;
+    private static Method persistentSaveMethod;
+    private static Object favoritesSidebarType;
 
     private EmiRuntimeAccess() {
     }
@@ -229,6 +235,44 @@ public final class EmiRuntimeAccess {
         }
     }
 
+    public static int removeFavoriteHandles(List<Object> handles) {
+        if (handles == null || handles.isEmpty() || !resolveFavoriteMutationHandles()) {
+            return 0;
+        }
+        SetByIdentity<Object> toRemove = SetByIdentity.of(handles);
+        int removedCount = 0;
+        try {
+            Object value = favoritesField.get(null);
+            if (!(value instanceof List<?> list)) {
+                return 0;
+            }
+            @SuppressWarnings("unchecked")
+            List<Object> favorites = (List<Object>) list;
+            for (int i = favorites.size() - 1; i >= 0; i--) {
+                if (toRemove.contains(favorites.get(i))) {
+                    favorites.remove(i);
+                    removedCount++;
+                }
+            }
+            if (removedCount > 0) {
+                try {
+                    persistentSaveMethod.invoke(null);
+                } catch (Exception e) {
+                    EmiBookmarkEnhancements.LOGGER.debug("Failed to save EMI persistent data after favorite prune", e);
+                }
+                try {
+                    repopulatePanelsMethod.invoke(null, favoritesSidebarType);
+                } catch (Exception e) {
+                    EmiBookmarkEnhancements.LOGGER.debug("Failed to refresh EMI favorites after favorite prune", e);
+                }
+            }
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to remove EMI favorite handles", e);
+            return 0;
+        }
+        return removedCount;
+    }
+
     private static boolean resolveRuntimeHandles() {
         if (favoritesField != null && hoveredStackMethod != null && lastMouseXField != null && lastMouseYField != null) {
             return true;
@@ -338,6 +382,47 @@ public final class EmiRuntimeAccess {
             sidebarLookupFailed = true;
             EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve EMI sidebar reflection handles", e);
             return false;
+        }
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static boolean resolveFavoriteMutationHandles() {
+        if (!resolveRuntimeHandles()) {
+            return false;
+        }
+        if (repopulatePanelsMethod != null && persistentSaveMethod != null && favoritesSidebarType != null) {
+            return true;
+        }
+        if (mutationLookupFailed) {
+            return false;
+        }
+        try {
+            Class<?> screenManagerClass = Class.forName(EMI_SCREEN_MANAGER_CLASS);
+            Class<?> sidebarTypeClass = Class.forName(EMI_SIDEBAR_TYPE_CLASS);
+            Class<?> persistentDataClass = Class.forName(EMI_PERSISTENT_DATA_CLASS);
+
+            repopulatePanelsMethod = screenManagerClass.getMethod("repopulatePanels", sidebarTypeClass);
+            persistentSaveMethod = persistentDataClass.getMethod("save");
+            favoritesSidebarType = Enum.valueOf((Class<? extends Enum>) sidebarTypeClass, "FAVORITES");
+            return true;
+        } catch (Exception e) {
+            mutationLookupFailed = true;
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve EMI mutation reflection handles", e);
+            return false;
+        }
+    }
+
+    private static final class SetByIdentity<T> {
+        private final java.util.Set<T> set = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+        static <T> SetByIdentity<T> of(List<T> values) {
+            SetByIdentity<T> out = new SetByIdentity<>();
+            out.set.addAll(values);
+            return out;
+        }
+
+        boolean contains(T value) {
+            return set.contains(value);
         }
     }
 

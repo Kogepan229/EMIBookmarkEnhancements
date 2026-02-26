@@ -7,21 +7,23 @@ import net.kogepan.emi_bookmark_enhancements.EmiBookmarkEnhancements;
 import net.kogepan.emi_bookmark_enhancements.bookmark.model.EmiBookmarkEntry;
 import net.kogepan.emi_bookmark_enhancements.bookmark.service.EmiBookmarkManager;
 import net.kogepan.emi_bookmark_enhancements.integration.emi.EmiIngredientKeyHelper;
-import net.kogepan.emi_bookmark_enhancements.integration.emi.EmiRuntimeAccess;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 public final class RecipeFavoriteHelper {
-    private static Method addFavoriteWithContextMethod;
+    private static Field favoritesField;
+    private static Constructor<?> favoriteConstructor;
     private static Method repopulatePanelsMethod;
+    private static Method persistentSaveMethod;
     private static Object favoritesSidebarType;
     private static boolean reflectionLookupFailed;
 
@@ -45,34 +47,32 @@ public final class RecipeFavoriteHelper {
             return false;
         }
 
-        List<Object> before = EmiRuntimeAccess.getFavoriteHandles();
-        Set<Object> beforeSet = Collections.newSetFromMap(new IdentityHashMap<>());
-        beforeSet.addAll(before);
-
-        for (PlannedFavorite favorite : plannedFavorites) {
-            try {
-                addFavoriteWithContextMethod.invoke(null, favorite.favoriteIngredient(), favorite.recipeContext());
-            } catch (Exception e) {
-                EmiBookmarkEnhancements.LOGGER.error("Failed to add EMI favorite from recipe", e);
-                if (createNewGroup) {
-                    bookmarkManager.removeGroup(groupId);
-                }
-                return false;
+        List<Object> createdHandles = new ArrayList<>(plannedFavorites.size());
+        List<Object> favorites = getRuntimeFavorites();
+        if (favorites == null) {
+            if (createNewGroup) {
+                bookmarkManager.removeGroup(groupId);
             }
+            return false;
+        }
+        try {
+            for (PlannedFavorite favorite : plannedFavorites) {
+                Object handle = favoriteConstructor.newInstance(favorite.favoriteIngredient(), favorite.recipeContext());
+                favorites.add(handle);
+                createdHandles.add(handle);
+            }
+        } catch (Exception e) {
+            rollbackCreatedFavorites(favorites, createdHandles);
+            EmiBookmarkEnhancements.LOGGER.error("Failed to add EMI favorite from recipe", e);
+            if (createNewGroup) {
+                bookmarkManager.removeGroup(groupId);
+            }
+            return false;
         }
 
-        List<Object> after = EmiRuntimeAccess.getFavoriteHandles();
-        List<Object> addedHandles = new ArrayList<>();
-        for (Object handle : after) {
-            if (!beforeSet.contains(handle)) {
-                addedHandles.add(handle);
-            }
-        }
-
-        int bound = Math.min(addedHandles.size(), plannedFavorites.size());
-        for (int i = 0; i < bound; i++) {
+        for (int i = 0; i < plannedFavorites.size(); i++) {
             PlannedFavorite favorite = plannedFavorites.get(i);
-            Object handle = addedHandles.get(i);
+            Object handle = createdHandles.get(i);
             bookmarkManager.addEntry(
                     favorite.groupId(),
                     favorite.itemKey(),
@@ -81,15 +81,7 @@ public final class RecipeFavoriteHelper {
                     handle);
         }
 
-        // Fallback in case EMI deduplicated favorites and fewer handles were created.
-        for (int i = bound; i < plannedFavorites.size(); i++) {
-            PlannedFavorite favorite = plannedFavorites.get(i);
-            bookmarkManager.addEntry(
-                    favorite.groupId(),
-                    favorite.itemKey(),
-                    favorite.factor(),
-                    favorite.type());
-        }
+        saveRuntimeFavorites();
 
         try {
             repopulatePanelsMethod.invoke(null, favoritesSidebarType);
@@ -157,7 +149,11 @@ public final class RecipeFavoriteHelper {
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static boolean resolveReflectionHandles() {
-        if (addFavoriteWithContextMethod != null && repopulatePanelsMethod != null && favoritesSidebarType != null) {
+        if (favoritesField != null
+                && favoriteConstructor != null
+                && repopulatePanelsMethod != null
+                && persistentSaveMethod != null
+                && favoritesSidebarType != null) {
             return true;
         }
         if (reflectionLookupFailed) {
@@ -165,11 +161,15 @@ public final class RecipeFavoriteHelper {
         }
         try {
             Class<?> favoritesClass = Class.forName("dev.emi.emi.runtime.EmiFavorites");
+            Class<?> favoriteClass = Class.forName("dev.emi.emi.runtime.EmiFavorite");
             Class<?> screenManagerClass = Class.forName("dev.emi.emi.screen.EmiScreenManager");
             Class<?> sidebarTypeClass = Class.forName("dev.emi.emi.config.SidebarType");
+            Class<?> persistentDataClass = Class.forName("dev.emi.emi.runtime.EmiPersistentData");
 
-            addFavoriteWithContextMethod = favoritesClass.getMethod("addFavorite", EmiIngredient.class, EmiRecipe.class);
+            favoritesField = favoritesClass.getField("favorites");
+            favoriteConstructor = favoriteClass.getConstructor(EmiIngredient.class, EmiRecipe.class);
             repopulatePanelsMethod = screenManagerClass.getMethod("repopulatePanels", sidebarTypeClass);
+            persistentSaveMethod = persistentDataClass.getMethod("save");
             favoritesSidebarType = Enum.valueOf((Class<? extends Enum>) sidebarTypeClass, "FAVORITES");
             return true;
         } catch (Exception e) {
@@ -177,6 +177,36 @@ public final class RecipeFavoriteHelper {
             EmiBookmarkEnhancements.LOGGER.warn("Failed to resolve EMI runtime methods for recipe shortcuts.");
             EmiBookmarkEnhancements.LOGGER.debug("Reflection lookup failure", e);
             return false;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Object> getRuntimeFavorites() {
+        try {
+            Object value = favoritesField.get(null);
+            if (value instanceof List<?> list) {
+                return (List<Object>) list;
+            }
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to access EMI favorites list", e);
+        }
+        return null;
+    }
+
+    private static void rollbackCreatedFavorites(List<Object> favorites, List<Object> createdHandles) {
+        if (favorites == null || createdHandles == null || createdHandles.isEmpty()) {
+            return;
+        }
+        Set<Object> toRemove = Collections.newSetFromMap(new IdentityHashMap<>());
+        toRemove.addAll(createdHandles);
+        favorites.removeIf(toRemove::contains);
+    }
+
+    private static void saveRuntimeFavorites() {
+        try {
+            persistentSaveMethod.invoke(null);
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to save EMI favorites", e);
         }
     }
 
