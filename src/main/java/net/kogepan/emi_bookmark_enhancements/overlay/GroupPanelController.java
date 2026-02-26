@@ -125,6 +125,10 @@ public final class GroupPanelController {
         if (bookmarkManager == null || !LayoutModeController.isVerticalMode()) {
             return;
         }
+        if (!EmiRuntimeAccess.isOverlayRenderableScreen(event.getScreen())
+                || !EmiRuntimeAccess.isFavoritesPanelVisible()) {
+            return;
+        }
         int fixedColumns = Math.max(1, EmiRuntimeAccess.getFavoritesSidebarBaseColumns());
         List<Integer> rowBreakpoints = collectFavoriteRowBreakpoints();
         boolean layoutChanged = EmiRuntimeAccess.applyVerticalFavoritesRowPolicy(true, fixedColumns);

@@ -31,13 +31,22 @@ public final class FavoriteQuantityOverlay {
         if (bookmarkManager == null) {
             return;
         }
+        if (!EmiRuntimeAccess.isOverlayRenderableScreen(event.getScreen())
+                || !EmiRuntimeAccess.isFavoritesPanelVisible()) {
+            return;
+        }
+
+        var visibleSlots = EmiRuntimeAccess.getVisibleFavoriteSlots();
+        if (visibleSlots.isEmpty()) {
+            return;
+        }
 
         RenderSystem.enableDepthTest();
         event.getGuiGraphics().pose().pushPose();
         event.getGuiGraphics().pose().translate(0.0F, 0.0F, 250.0F);
 
         Font font = Minecraft.getInstance().font;
-        for (EmiRuntimeAccess.FavoriteSlot slot : EmiRuntimeAccess.getVisibleFavoriteSlots()) {
+        for (EmiRuntimeAccess.FavoriteSlot slot : visibleSlots) {
             EmiBookmarkEntry entry = bookmarkManager.findEntry(slot.handle());
             if (entry == null) {
                 continue;

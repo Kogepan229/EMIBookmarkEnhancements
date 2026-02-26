@@ -263,6 +263,61 @@ public final class EmiRuntimeAccess {
         }
     }
 
+    public static boolean isOverlayRenderableScreen(Object screen) {
+        if (screen == null) {
+            return false;
+        }
+        if (screen instanceof AbstractContainerScreen<?>) {
+            return true;
+        }
+        if (!recipeLookupFailed && resolveRecipeHandles() && recipeScreenClass != null) {
+            return recipeScreenClass.isInstance(screen);
+        }
+        return EMI_RECIPE_SCREEN_CLASS.equals(screen.getClass().getName());
+    }
+
+    public static boolean isFavoritesPanelVisible() {
+        if (!resolveSidebarHandles()) {
+            return false;
+        }
+        try {
+            Object value = panelsField.get(null);
+            if (!(value instanceof List<?> panels)) {
+                return false;
+            }
+            for (Object panel : panels) {
+                if (panel == null || !sidebarPanelClass.isInstance(panel)) {
+                    continue;
+                }
+                boolean isVisible = (boolean) sidebarPanelIsVisibleMethod.invoke(panel);
+                if (!isVisible) {
+                    continue;
+                }
+                Object spacesValue = sidebarPanelGetSpacesMethod.invoke(panel);
+                if (!(spacesValue instanceof List<?> spaces)) {
+                    continue;
+                }
+                for (Object space : spaces) {
+                    if (space == null || !screenSpaceClass.isInstance(space)) {
+                        continue;
+                    }
+                    Object type = screenSpaceGetTypeMethod.invoke(space);
+                    if (type == null || !Objects.equals(type.toString(), "FAVORITES")) {
+                        continue;
+                    }
+                    int pageSize = screenSpacePageSizeField.getInt(space);
+                    int width = screenSpaceTwField.getInt(space);
+                    if (pageSize > 0 && width > 0) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to inspect favorites panel visibility", e);
+        }
+        return false;
+    }
+
     public static int removeFavoriteHandles(List<Object> handles) {
         if (handles == null || handles.isEmpty() || !resolveFavoriteMutationHandles()) {
             return 0;
