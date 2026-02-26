@@ -1,0 +1,7 @@
+{
+  "tooltip.emi_bookmark_enhancements.quantity": "Quantity: %s",
+  "tooltip.emi_bookmark_enhancements.quantity_breakdown": "%s",
+  "tooltip.emi_bookmark_enhancements.hold_alt": "Hold Alt for more actions",
+  "tooltip.emi_bookmark_enhancements.action.ctrl_scroll": "Ctrl + Scroll: change by 1",
+  "tooltip.emi_bookmark_enhancements.action.ctrl_alt_scroll": "Ctrl + Alt + Scroll: change by 64"
+}

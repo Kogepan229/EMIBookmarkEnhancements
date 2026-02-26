@@ -5,6 +5,7 @@ import net.kogepan.emi_bookmark_enhancements.bookmark.service.EmiBookmarkManager
 import net.kogepan.emi_bookmark_enhancements.input.FavoriteScrollHandler;
 import net.kogepan.emi_bookmark_enhancements.input.RecipeShortcutHandler;
 import net.kogepan.emi_bookmark_enhancements.overlay.FavoriteQuantityOverlay;
+import net.kogepan.emi_bookmark_enhancements.overlay.FavoriteTooltipAugmenter;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
@@ -33,6 +34,7 @@ public final class ClientLifecycleHooks {
             FavoriteScrollHandler.register(BOOKMARK_MANAGER);
             RecipeShortcutHandler.register(BOOKMARK_MANAGER);
             FavoriteQuantityOverlay.register(BOOKMARK_MANAGER);
+            FavoriteTooltipAugmenter.register(BOOKMARK_MANAGER);
             registerRuntimeEvents();
         });
         registerShutdownHook();

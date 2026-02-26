@@ -9,6 +9,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 public final class EmiRuntimeAccess {
     private static final String EMI_FAVORITES_CLASS = "dev.emi.emi.runtime.EmiFavorites";
@@ -16,14 +17,18 @@ public final class EmiRuntimeAccess {
     private static final String EMI_FAVORITE_CLASS = "dev.emi.emi.runtime.EmiFavorite";
     private static final String EMI_RECIPE_SCREEN_CLASS = "dev.emi.emi.screen.RecipeScreen";
     private static final String EMI_WIDGET_GROUP_CLASS = "dev.emi.emi.screen.WidgetGroup";
+    private static final String EMI_SIDEBAR_PANEL_CLASS = "dev.emi.emi.screen.EmiScreenManager$SidebarPanel";
+    private static final String EMI_SCREEN_SPACE_CLASS = "dev.emi.emi.screen.EmiScreenManager$ScreenSpace";
 
     private static Field favoritesField;
     private static Field lastMouseXField;
     private static Field lastMouseYField;
+    private static Field panelsField;
     private static Method hoveredStackMethod;
     private static boolean lookupFailed;
     private static boolean unavailableLogged;
     private static boolean recipeLookupFailed;
+    private static boolean sidebarLookupFailed;
 
     private static Class<?> recipeScreenClass;
     private static Class<?> widgetGroupClass;
@@ -33,6 +38,18 @@ public final class EmiRuntimeAccess {
     private static Method widgetGroupYMethod;
     private static Method widgetGroupWidthMethod;
     private static Method widgetGroupHeightMethod;
+
+    private static Class<?> sidebarPanelClass;
+    private static Class<?> screenSpaceClass;
+    private static Field sidebarPanelPageField;
+    private static Field sidebarPanelSpaceField;
+    private static Method sidebarPanelIsVisibleMethod;
+    private static Method sidebarPanelGetSpacesMethod;
+    private static Field screenSpacePageSizeField;
+    private static Method screenSpaceGetTypeMethod;
+    private static Method screenSpaceGetStacksMethod;
+    private static Method screenSpaceGetRawXMethod;
+    private static Method screenSpaceGetRawYMethod;
 
     private EmiRuntimeAccess() {
     }
@@ -148,6 +165,70 @@ public final class EmiRuntimeAccess {
         return null;
     }
 
+    public static List<FavoriteSlot> getVisibleFavoriteSlots() {
+        if (!resolveSidebarHandles()) {
+            return List.of();
+        }
+        try {
+            Object value = panelsField.get(null);
+            if (!(value instanceof List<?> panels)) {
+                return List.of();
+            }
+            List<FavoriteSlot> slots = new ArrayList<>();
+            for (Object panel : panels) {
+                if (panel == null || !sidebarPanelClass.isInstance(panel)) {
+                    continue;
+                }
+                boolean isVisible = (boolean) sidebarPanelIsVisibleMethod.invoke(panel);
+                if (!isVisible) {
+                    continue;
+                }
+
+                int page = sidebarPanelPageField.getInt(panel);
+                Object mainSpace = sidebarPanelSpaceField.get(panel);
+                Object spacesValue = sidebarPanelGetSpacesMethod.invoke(panel);
+                if (!(spacesValue instanceof List<?> spaces)) {
+                    continue;
+                }
+
+                for (Object space : spaces) {
+                    if (space == null || !screenSpaceClass.isInstance(space)) {
+                        continue;
+                    }
+                    Object type = screenSpaceGetTypeMethod.invoke(space);
+                    if (type == null || !Objects.equals(type.toString(), "FAVORITES")) {
+                        continue;
+                    }
+                    int pageSize = screenSpacePageSizeField.getInt(space);
+                    if (pageSize <= 0) {
+                        continue;
+                    }
+
+                    Object stacksValue = screenSpaceGetStacksMethod.invoke(space);
+                    if (!(stacksValue instanceof List<?> stacks) || stacks.isEmpty()) {
+                        continue;
+                    }
+
+                    int startIndex = space == mainSpace ? Math.max(0, page) * pageSize : 0;
+                    if (startIndex >= stacks.size()) {
+                        continue;
+                    }
+                    int endIndex = Math.min(startIndex + pageSize, stacks.size());
+                    for (int i = startIndex; i < endIndex; i++) {
+                        int localIndex = i - startIndex;
+                        int x = (int) screenSpaceGetRawXMethod.invoke(space, localIndex);
+                        int y = (int) screenSpaceGetRawYMethod.invoke(space, localIndex);
+                        slots.add(new FavoriteSlot(stacks.get(i), x + 1, y + 1));
+                    }
+                }
+            }
+            return slots;
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve visible favorite slots", e);
+            return List.of();
+        }
+    }
+
     private static boolean resolveRuntimeHandles() {
         if (favoritesField != null && hoveredStackMethod != null && lastMouseXField != null && lastMouseYField != null) {
             return true;
@@ -208,5 +289,58 @@ public final class EmiRuntimeAccess {
             EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve EMI recipe screen reflection handles", e);
             return false;
         }
+    }
+
+    private static boolean resolveSidebarHandles() {
+        if (!resolveRuntimeHandles()) {
+            return false;
+        }
+        if (sidebarPanelClass != null
+                && screenSpaceClass != null
+                && panelsField != null
+                && sidebarPanelPageField != null
+                && sidebarPanelSpaceField != null
+                && sidebarPanelIsVisibleMethod != null
+                && sidebarPanelGetSpacesMethod != null
+                && screenSpacePageSizeField != null
+                && screenSpaceGetTypeMethod != null
+                && screenSpaceGetStacksMethod != null
+                && screenSpaceGetRawXMethod != null
+                && screenSpaceGetRawYMethod != null) {
+            return true;
+        }
+        if (sidebarLookupFailed) {
+            return false;
+        }
+        try {
+            Class<?> screenManagerClass = Class.forName(EMI_SCREEN_MANAGER_CLASS);
+            sidebarPanelClass = Class.forName(EMI_SIDEBAR_PANEL_CLASS);
+            screenSpaceClass = Class.forName(EMI_SCREEN_SPACE_CLASS);
+
+            panelsField = screenManagerClass.getDeclaredField("panels");
+            panelsField.setAccessible(true);
+
+            sidebarPanelPageField = sidebarPanelClass.getDeclaredField("page");
+            sidebarPanelPageField.setAccessible(true);
+            sidebarPanelSpaceField = sidebarPanelClass.getDeclaredField("space");
+            sidebarPanelSpaceField.setAccessible(true);
+            sidebarPanelIsVisibleMethod = sidebarPanelClass.getMethod("isVisible");
+            sidebarPanelGetSpacesMethod = sidebarPanelClass.getMethod("getSpaces");
+
+            screenSpacePageSizeField = screenSpaceClass.getDeclaredField("pageSize");
+            screenSpacePageSizeField.setAccessible(true);
+            screenSpaceGetTypeMethod = screenSpaceClass.getMethod("getType");
+            screenSpaceGetStacksMethod = screenSpaceClass.getMethod("getStacks");
+            screenSpaceGetRawXMethod = screenSpaceClass.getMethod("getRawX", int.class);
+            screenSpaceGetRawYMethod = screenSpaceClass.getMethod("getRawY", int.class);
+            return true;
+        } catch (Exception e) {
+            sidebarLookupFailed = true;
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve EMI sidebar reflection handles", e);
+            return false;
+        }
+    }
+
+    public record FavoriteSlot(Object handle, int x, int y) {
     }
 }

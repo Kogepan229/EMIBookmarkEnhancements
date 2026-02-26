@@ -1,0 +1,7 @@
+{
+  "tooltip.emi_bookmark_enhancements.quantity": "数量: %s",
+  "tooltip.emi_bookmark_enhancements.quantity_breakdown": "%s",
+  "tooltip.emi_bookmark_enhancements.hold_alt": "Altキーで詳細操作を表示",
+  "tooltip.emi_bookmark_enhancements.action.ctrl_scroll": "Ctrl + ホイール: 1ずつ増減",
+  "tooltip.emi_bookmark_enhancements.action.ctrl_alt_scroll": "Ctrl + Alt + ホイール: 64ずつ増減"
+}
