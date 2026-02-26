@@ -125,8 +125,11 @@ public final class GroupPanelController {
         if (bookmarkManager == null || !LayoutModeController.isVerticalMode()) {
             return;
         }
-        int preferredColumns = determinePreferredVerticalColumns();
-        if (EmiRuntimeAccess.applyVerticalFavoritesRowPolicy(true, preferredColumns)) {
+        int fixedColumns = Math.max(1, EmiRuntimeAccess.getFavoritesSidebarBaseColumns());
+        int recipeColumns = determinePreferredVerticalColumns(fixedColumns);
+        boolean layoutChanged = EmiRuntimeAccess.applyVerticalFavoritesRowPolicy(true, fixedColumns);
+        layoutChanged |= EmiRuntimeAccess.applyFavoriteSpaceColumns(recipeColumns);
+        if (layoutChanged) {
             return;
         }
         FavoriteGridSnapshot grid = captureGridSnapshot();
@@ -189,14 +192,11 @@ public final class GroupPanelController {
                 GroupBracketRenderer.HOVER_HIGHLIGHT_COLOR);
     }
 
-    private static int determinePreferredVerticalColumns() {
-        int maxColumns = Math.max(1, EmiRuntimeAccess.getFavoritesSidebarBaseColumns());
+    private static int determinePreferredVerticalColumns(int maxColumns) {
+        int safeMax = Math.max(1, maxColumns);
         List<Object> favoriteHandles = EmiRuntimeAccess.getFavoriteHandles();
-        if (favoriteHandles.isEmpty()) {
-            return maxColumns;
-        }
-        if (maxColumns == 1) {
-            return 1;
+        if (favoriteHandles.isEmpty() || safeMax == 1) {
+            return safeMax;
         }
 
         List<Integer> boundaries = new ArrayList<>();
@@ -212,10 +212,10 @@ public final class GroupPanelController {
             previousGroupId = groupId;
         }
         if (boundaries.isEmpty()) {
-            return maxColumns;
+            return safeMax;
         }
 
-        for (int columns = maxColumns; columns >= 2; columns--) {
+        for (int columns = safeMax; columns >= 2; columns--) {
             if (isBoundaryAligned(boundaries, columns)) {
                 return columns;
             }

@@ -8,7 +8,9 @@ import net.kogepan.emi_bookmark_enhancements.EmiBookmarkEnhancements;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +56,8 @@ public final class EmiRuntimeAccess {
     private static Method sidebarPanelIsVisibleMethod;
     private static Method sidebarPanelGetSpacesMethod;
     private static Field screenSpacePageSizeField;
+    private static Field screenSpaceWidthsField;
+    private static Field screenSpaceBatcherField;
     private static Field screenSpaceTxField;
     private static Field screenSpaceTyField;
     private static Field screenSpaceTwField;
@@ -61,6 +65,7 @@ public final class EmiRuntimeAccess {
     private static Method screenSpaceGetStacksMethod;
     private static Method screenSpaceGetRawXMethod;
     private static Method screenSpaceGetRawYMethod;
+    private static Method stackBatcherRepopulateMethod;
     private static Method repopulatePanelsMethod;
     private static Method persistentSaveMethod;
     private static Object favoritesSidebarType;
@@ -77,6 +82,8 @@ public final class EmiRuntimeAccess {
     private static int baseLeftSidebarMargin = Integer.MIN_VALUE;
     private static int appliedLeftSidebarInset;
     private static final Map<String, Integer> baseSidebarColumns = new HashMap<>();
+    private static final Map<Object, int[]> baseFavoriteSpaceWidths = new IdentityHashMap<>();
+    private static final Map<Object, Integer> baseFavoriteSpacePageSizes = new IdentityHashMap<>();
 
     private EmiRuntimeAccess() {
     }
@@ -428,6 +435,7 @@ public final class EmiRuntimeAccess {
                     }
                 }
             } else {
+                changed |= clearFavoriteSpaceColumnOverrides();
                 Set<String> knownSides = new LinkedHashSet<>(baseSidebarColumns.keySet());
                 for (String side : knownSides) {
                     changed |= restoreSidebarColumns(side);
@@ -439,6 +447,74 @@ public final class EmiRuntimeAccess {
         } catch (Exception e) {
             EmiBookmarkEnhancements.LOGGER.debug("Failed to apply favorites vertical row policy", e);
             return false;
+        }
+        return changed;
+    }
+
+    public static boolean applyFavoriteSpaceColumns(int preferredColumns) {
+        if (!resolveSidebarHandles()) {
+            return false;
+        }
+
+        int safePreferredColumns = Math.max(1, preferredColumns);
+        boolean changed = false;
+        Set<Object> seenSpaces = Collections.newSetFromMap(new IdentityHashMap<>());
+        try {
+            Object panelsValue = panelsField.get(null);
+            if (!(panelsValue instanceof List<?> panels)) {
+                return false;
+            }
+
+            for (Object panel : panels) {
+                if (panel == null || !sidebarPanelClass.isInstance(panel)) {
+                    continue;
+                }
+                Object spacesValue = sidebarPanelGetSpacesMethod.invoke(panel);
+                if (!(spacesValue instanceof List<?> spaces)) {
+                    continue;
+                }
+                for (Object space : spaces) {
+                    if (space == null || !screenSpaceClass.isInstance(space)) {
+                        continue;
+                    }
+                    Object type = screenSpaceGetTypeMethod.invoke(space);
+                    if (type == null || !"FAVORITES".equals(type.toString())) {
+                        continue;
+                    }
+                    int[] widths = readScreenSpaceWidths(space);
+                    if (widths == null || widths.length == 0) {
+                        continue;
+                    }
+
+                    seenSpaces.add(space);
+                    int[] baseWidths = baseFavoriteSpaceWidths.computeIfAbsent(space, key -> widths.clone());
+                    baseFavoriteSpacePageSizes.putIfAbsent(space, screenSpacePageSizeField.getInt(space));
+
+                    int targetPageSize = 0;
+                    for (int row = 0; row < widths.length; row++) {
+                        int baseWidth = row < baseWidths.length ? baseWidths[row] : widths[row];
+                        int target = Math.max(0, Math.min(baseWidth, safePreferredColumns));
+                        targetPageSize += target;
+                        if (widths[row] != target) {
+                            widths[row] = target;
+                            changed = true;
+                            markScreenSpaceBatcherDirty(space);
+                        }
+                    }
+
+                    int currentPageSize = screenSpacePageSizeField.getInt(space);
+                    if (currentPageSize != targetPageSize) {
+                        screenSpacePageSizeField.setInt(space, targetPageSize);
+                        changed = true;
+                        markScreenSpaceBatcherDirty(space);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to apply favorites row shape", e);
+            return false;
+        } finally {
+            cleanupFavoriteSpaceBaseCaches(seenSpaces);
         }
         return changed;
     }
@@ -546,13 +622,16 @@ public final class EmiRuntimeAccess {
                 && sidebarPanelIsVisibleMethod != null
                 && sidebarPanelGetSpacesMethod != null
                 && screenSpacePageSizeField != null
+                && screenSpaceWidthsField != null
+                && screenSpaceBatcherField != null
                 && screenSpaceTxField != null
                 && screenSpaceTyField != null
                 && screenSpaceTwField != null
                 && screenSpaceGetTypeMethod != null
                 && screenSpaceGetStacksMethod != null
                 && screenSpaceGetRawXMethod != null
-                && screenSpaceGetRawYMethod != null) {
+                && screenSpaceGetRawYMethod != null
+                && stackBatcherRepopulateMethod != null) {
             return true;
         }
         if (sidebarLookupFailed) {
@@ -575,6 +654,9 @@ public final class EmiRuntimeAccess {
 
             screenSpacePageSizeField = screenSpaceClass.getDeclaredField("pageSize");
             screenSpacePageSizeField.setAccessible(true);
+            screenSpaceWidthsField = screenSpaceClass.getDeclaredField("widths");
+            screenSpaceWidthsField.setAccessible(true);
+            screenSpaceBatcherField = screenSpaceClass.getField("batcher");
             screenSpaceTxField = screenSpaceClass.getDeclaredField("tx");
             screenSpaceTxField.setAccessible(true);
             screenSpaceTyField = screenSpaceClass.getDeclaredField("ty");
@@ -585,6 +667,8 @@ public final class EmiRuntimeAccess {
             screenSpaceGetStacksMethod = screenSpaceClass.getMethod("getStacks");
             screenSpaceGetRawXMethod = screenSpaceClass.getMethod("getRawX", int.class);
             screenSpaceGetRawYMethod = screenSpaceClass.getMethod("getRawY", int.class);
+            Class<?> stackBatcherClass = Class.forName("dev.emi.emi.screen.StackBatcher");
+            stackBatcherRepopulateMethod = stackBatcherClass.getMethod("repopulate");
             return true;
         } catch (Exception e) {
             sidebarLookupFailed = true;
@@ -814,6 +898,95 @@ public final class EmiRuntimeAccess {
             baseSidebarColumns.remove(side);
         }
         return false;
+    }
+
+    private static int[] readScreenSpaceWidths(Object space) {
+        try {
+            Object value = screenSpaceWidthsField.get(space);
+            if (value instanceof int[] widths) {
+                return widths;
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private static boolean clearFavoriteSpaceColumnOverrides() {
+        if (!resolveSidebarHandles()) {
+            baseFavoriteSpaceWidths.clear();
+            baseFavoriteSpacePageSizes.clear();
+            return false;
+        }
+        if (baseFavoriteSpaceWidths.isEmpty() && baseFavoriteSpacePageSizes.isEmpty()) {
+            return false;
+        }
+
+        boolean changed = false;
+        for (Map.Entry<Object, int[]> entry : new ArrayList<>(baseFavoriteSpaceWidths.entrySet())) {
+            Object space = entry.getKey();
+            int[] baseWidths = entry.getValue();
+            if (space == null || baseWidths == null) {
+                continue;
+            }
+
+            int[] widths = readScreenSpaceWidths(space);
+            if (widths != null) {
+                int limit = Math.min(widths.length, baseWidths.length);
+                for (int i = 0; i < limit; i++) {
+                    if (widths[i] != baseWidths[i]) {
+                        widths[i] = baseWidths[i];
+                        changed = true;
+                        markScreenSpaceBatcherDirty(space);
+                    }
+                }
+            }
+
+            Integer basePageSize = baseFavoriteSpacePageSizes.get(space);
+            if (basePageSize != null) {
+                try {
+                    int currentPageSize = screenSpacePageSizeField.getInt(space);
+                    if (currentPageSize != basePageSize) {
+                        screenSpacePageSizeField.setInt(space, basePageSize);
+                        changed = true;
+                        markScreenSpaceBatcherDirty(space);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        baseFavoriteSpaceWidths.clear();
+        baseFavoriteSpacePageSizes.clear();
+        return changed;
+    }
+
+    private static void cleanupFavoriteSpaceBaseCaches(Set<Object> seenSpaces) {
+        if (seenSpaces == null) {
+            return;
+        }
+        List<Object> stale = new ArrayList<>();
+        for (Object space : baseFavoriteSpaceWidths.keySet()) {
+            if (!seenSpaces.contains(space)) {
+                stale.add(space);
+            }
+        }
+        for (Object space : stale) {
+            baseFavoriteSpaceWidths.remove(space);
+            baseFavoriteSpacePageSizes.remove(space);
+        }
+    }
+
+    private static void markScreenSpaceBatcherDirty(Object space) {
+        if (space == null || screenSpaceBatcherField == null || stackBatcherRepopulateMethod == null) {
+            return;
+        }
+        try {
+            Object batcher = screenSpaceBatcherField.get(space);
+            if (batcher != null) {
+                stackBatcherRepopulateMethod.invoke(batcher);
+            }
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to repopulate EMI stack batcher", e);
+        }
     }
 
     private static Field sizeFieldForSide(String side) {
