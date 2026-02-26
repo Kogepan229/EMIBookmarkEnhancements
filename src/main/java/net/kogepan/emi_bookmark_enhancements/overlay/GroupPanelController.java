@@ -126,9 +126,9 @@ public final class GroupPanelController {
             return;
         }
         int fixedColumns = Math.max(1, EmiRuntimeAccess.getFavoritesSidebarBaseColumns());
-        int recipeColumns = determinePreferredVerticalColumns(fixedColumns);
+        List<Integer> rowBreakpoints = collectFavoriteRowBreakpoints();
         boolean layoutChanged = EmiRuntimeAccess.applyVerticalFavoritesRowPolicy(true, fixedColumns);
-        layoutChanged |= EmiRuntimeAccess.applyFavoriteSpaceColumns(recipeColumns);
+        layoutChanged |= EmiRuntimeAccess.applyFavoriteSpaceColumns(fixedColumns, rowBreakpoints);
         if (layoutChanged) {
             return;
         }
@@ -192,11 +192,10 @@ public final class GroupPanelController {
                 GroupBracketRenderer.HOVER_HIGHLIGHT_COLOR);
     }
 
-    private static int determinePreferredVerticalColumns(int maxColumns) {
-        int safeMax = Math.max(1, maxColumns);
+    private static List<Integer> collectFavoriteRowBreakpoints() {
         List<Object> favoriteHandles = EmiRuntimeAccess.getFavoriteHandles();
-        if (favoriteHandles.isEmpty() || safeMax == 1) {
-            return safeMax;
+        if (favoriteHandles.size() <= 1) {
+            return List.of();
         }
 
         List<Integer> boundaries = new ArrayList<>();
@@ -211,16 +210,7 @@ public final class GroupPanelController {
             previousEntry = currentEntry;
             previousGroupId = groupId;
         }
-        if (boundaries.isEmpty()) {
-            return safeMax;
-        }
-
-        for (int columns = safeMax; columns >= 2; columns--) {
-            if (isBoundaryAligned(boundaries, columns)) {
-                return columns;
-            }
-        }
-        return 1;
+        return boundaries;
     }
 
     private static EmiBookmarkEntry resolveHandleEntry(Object favoriteHandle) {
@@ -239,15 +229,6 @@ public final class GroupPanelController {
                 && currentEntry != null
                 && currentEntry.getGroupId() == previousEntry.getGroupId()
                 && currentEntry.isResult();
-    }
-
-    private static boolean isBoundaryAligned(List<Integer> boundaries, int columns) {
-        for (int boundary : boundaries) {
-            if (boundary % columns != 0) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private static boolean includeRowsInGroup(int minRow, int maxRow, FavoriteGridSnapshot grid) {

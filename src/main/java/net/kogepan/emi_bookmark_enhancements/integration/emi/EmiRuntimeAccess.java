@@ -451,12 +451,13 @@ public final class EmiRuntimeAccess {
         return changed;
     }
 
-    public static boolean applyFavoriteSpaceColumns(int preferredColumns) {
+    public static boolean applyFavoriteSpaceColumns(int maxColumns, List<Integer> breakpoints) {
         if (!resolveSidebarHandles()) {
             return false;
         }
 
-        int safePreferredColumns = Math.max(1, preferredColumns);
+        int safeMaxColumns = Math.max(1, maxColumns);
+        List<Integer> normalizedBreakpoints = normalizeBreakpoints(breakpoints);
         boolean changed = false;
         Set<Object> seenSpaces = Collections.newSetFromMap(new IdentityHashMap<>());
         try {
@@ -469,6 +470,8 @@ public final class EmiRuntimeAccess {
                 if (panel == null || !sidebarPanelClass.isInstance(panel)) {
                     continue;
                 }
+                int page = sidebarPanelPageField.getInt(panel);
+                Object mainSpace = sidebarPanelSpaceField.get(panel);
                 Object spacesValue = sidebarPanelGetSpacesMethod.invoke(panel);
                 if (!(spacesValue instanceof List<?> spaces)) {
                     continue;
@@ -490,20 +493,42 @@ public final class EmiRuntimeAccess {
                     int[] baseWidths = baseFavoriteSpaceWidths.computeIfAbsent(space, key -> widths.clone());
                     baseFavoriteSpacePageSizes.putIfAbsent(space, screenSpacePageSizeField.getInt(space));
 
+                    int currentPageSize = Math.max(1, screenSpacePageSizeField.getInt(space));
+                    int startIndex = space == mainSpace ? Math.max(0, page) * currentPageSize : 0;
+                    int breakpointCursor = 0;
+                    while (breakpointCursor < normalizedBreakpoints.size()
+                            && normalizedBreakpoints.get(breakpointCursor) <= startIndex) {
+                        breakpointCursor++;
+                    }
+
+                    int consumed = startIndex;
                     int targetPageSize = 0;
                     for (int row = 0; row < widths.length; row++) {
                         int baseWidth = row < baseWidths.length ? baseWidths[row] : widths[row];
-                        int target = Math.max(0, Math.min(baseWidth, safePreferredColumns));
+                        int target = Math.max(0, Math.min(baseWidth, safeMaxColumns));
+                        if (target > 0) {
+                            while (breakpointCursor < normalizedBreakpoints.size()
+                                    && normalizedBreakpoints.get(breakpointCursor) <= consumed) {
+                                breakpointCursor++;
+                            }
+                            if (breakpointCursor < normalizedBreakpoints.size()) {
+                                int nextBoundary = normalizedBreakpoints.get(breakpointCursor);
+                                if (nextBoundary > consumed && nextBoundary < consumed + target) {
+                                    target = Math.max(1, nextBoundary - consumed);
+                                }
+                            }
+                        }
                         targetPageSize += target;
                         if (widths[row] != target) {
                             widths[row] = target;
                             changed = true;
                             markScreenSpaceBatcherDirty(space);
                         }
+                        consumed += target;
                     }
 
-                    int currentPageSize = screenSpacePageSizeField.getInt(space);
-                    if (currentPageSize != targetPageSize) {
+                    int rawCurrentPageSize = screenSpacePageSizeField.getInt(space);
+                    if (rawCurrentPageSize != targetPageSize) {
                         screenSpacePageSizeField.setInt(space, targetPageSize);
                         changed = true;
                         markScreenSpaceBatcherDirty(space);
@@ -973,6 +998,31 @@ public final class EmiRuntimeAccess {
             baseFavoriteSpaceWidths.remove(space);
             baseFavoriteSpacePageSizes.remove(space);
         }
+    }
+
+    private static List<Integer> normalizeBreakpoints(List<Integer> breakpoints) {
+        if (breakpoints == null || breakpoints.isEmpty()) {
+            return List.of();
+        }
+        List<Integer> normalized = new ArrayList<>(breakpoints.size());
+        for (Integer breakpoint : breakpoints) {
+            if (breakpoint != null && breakpoint > 0) {
+                normalized.add(breakpoint);
+            }
+        }
+        if (normalized.isEmpty()) {
+            return List.of();
+        }
+        Collections.sort(normalized);
+        List<Integer> unique = new ArrayList<>(normalized.size());
+        int previous = Integer.MIN_VALUE;
+        for (int value : normalized) {
+            if (value != previous) {
+                unique.add(value);
+                previous = value;
+            }
+        }
+        return unique;
     }
 
     private static void markScreenSpaceBatcherDirty(Object space) {
