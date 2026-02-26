@@ -20,6 +20,10 @@ public final class GroupBracketRenderer {
     private GroupBracketRenderer() {
     }
 
+    public static int getPanelLeft(int gridLeft) {
+        return Math.max(0, gridLeft - GROUP_PANEL_WIDTH);
+    }
+
     public static void renderBrackets(GuiGraphics guiGraphics,
                                       int gridLeft,
                                       int gridTop,
@@ -64,7 +68,7 @@ public final class GroupBracketRenderer {
                                           int rowHeight,
                                           int rowIndex,
                                           int color) {
-        int x = gridLeft - GROUP_PANEL_WIDTH;
+        int x = getPanelLeft(gridLeft);
         int y = gridTop + rowIndex * rowHeight;
         guiGraphics.fill(x, y, x + GROUP_PANEL_WIDTH, y + rowHeight, color);
     }
@@ -92,7 +96,8 @@ public final class GroupBracketRenderer {
                                          int color) {
         int halfWidth = GROUP_PANEL_WIDTH / 2;
         int heightPadding = Math.max(1, rowHeight / 4);
-        int leftPosition = gridLeft - halfWidth - 1;
+        int panelLeft = getPanelLeft(gridLeft);
+        int leftPosition = panelLeft + halfWidth - 1;
 
         int top = gridTop + startRow * rowHeight;
         int bottom = gridTop + (endRow + 1) * rowHeight;

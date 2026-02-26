@@ -21,6 +21,7 @@ public final class EmiRuntimeAccess {
     private static final String EMI_SCREEN_SPACE_CLASS = "dev.emi.emi.screen.EmiScreenManager$ScreenSpace";
     private static final String EMI_SIDEBAR_TYPE_CLASS = "dev.emi.emi.config.SidebarType";
     private static final String EMI_PERSISTENT_DATA_CLASS = "dev.emi.emi.runtime.EmiPersistentData";
+    private static final String EMI_CONFIG_CLASS = "dev.emi.emi.config.EmiConfig";
 
     private static Field favoritesField;
     private static Field lastMouseXField;
@@ -59,6 +60,12 @@ public final class EmiRuntimeAccess {
     private static Method repopulatePanelsMethod;
     private static Method persistentSaveMethod;
     private static Object favoritesSidebarType;
+    private static Method forceRecalculateMethod;
+    private static Field leftSidebarMarginsField;
+    private static Field intGroupValuesField;
+    private static boolean sidebarInsetLookupFailed;
+    private static int baseLeftSidebarMargin = Integer.MIN_VALUE;
+    private static int appliedLeftSidebarInset;
 
     private EmiRuntimeAccess() {
     }
@@ -338,6 +345,48 @@ public final class EmiRuntimeAccess {
         return false;
     }
 
+    public static void ensureFavoritesSidebarInset(int requiredInsetPx, int observedGridLeft) {
+        if (requiredInsetPx <= 0 || observedGridLeft >= requiredInsetPx || !resolveSidebarInsetHandles()) {
+            return;
+        }
+        int requiredBoost = requiredInsetPx - observedGridLeft;
+        if (requiredBoost <= appliedLeftSidebarInset) {
+            return;
+        }
+
+        try {
+            Object margins = leftSidebarMarginsField.get(null);
+            if (margins == null) {
+                return;
+            }
+            Object valuesObj = intGroupValuesField.get(margins);
+            if (!(valuesObj instanceof List<?> values) || values.size() < 4) {
+                return;
+            }
+            Object leftValue = values.get(3);
+            if (!(leftValue instanceof Number currentLeftNumber)) {
+                return;
+            }
+            int currentLeft = currentLeftNumber.intValue();
+            if (baseLeftSidebarMargin == Integer.MIN_VALUE) {
+                baseLeftSidebarMargin = Math.max(0, currentLeft - appliedLeftSidebarInset);
+            }
+
+            int targetLeft = Math.max(currentLeft, baseLeftSidebarMargin + requiredBoost);
+            if (targetLeft == currentLeft) {
+                return;
+            }
+
+            @SuppressWarnings("unchecked")
+            List<Object> mutableValues = (List<Object>) values;
+            mutableValues.set(3, targetLeft);
+            appliedLeftSidebarInset = targetLeft - baseLeftSidebarMargin;
+            forceRecalculateMethod.invoke(null);
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to increase favorites sidebar inset", e);
+        }
+    }
+
     private static boolean resolveRuntimeHandles() {
         if (favoritesField != null && hoveredStackMethod != null && lastMouseXField != null && lastMouseYField != null) {
             return true;
@@ -482,6 +531,29 @@ public final class EmiRuntimeAccess {
         } catch (Exception e) {
             mutationLookupFailed = true;
             EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve EMI mutation reflection handles", e);
+            return false;
+        }
+    }
+
+    private static boolean resolveSidebarInsetHandles() {
+        if (leftSidebarMarginsField != null && intGroupValuesField != null && forceRecalculateMethod != null) {
+            return true;
+        }
+        if (sidebarInsetLookupFailed) {
+            return false;
+        }
+        try {
+            Class<?> configClass = Class.forName(EMI_CONFIG_CLASS);
+            Class<?> screenManagerClass = Class.forName(EMI_SCREEN_MANAGER_CLASS);
+            Class<?> intGroupClass = Class.forName("dev.emi.emi.config.IntGroup");
+
+            leftSidebarMarginsField = configClass.getField("leftSidebarMargins");
+            intGroupValuesField = intGroupClass.getField("values");
+            forceRecalculateMethod = screenManagerClass.getMethod("forceRecalculate");
+            return true;
+        } catch (Exception e) {
+            sidebarInsetLookupFailed = true;
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve EMI sidebar inset handles", e);
             return false;
         }
     }

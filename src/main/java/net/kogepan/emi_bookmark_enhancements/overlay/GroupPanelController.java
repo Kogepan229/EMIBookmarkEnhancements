@@ -131,6 +131,11 @@ public final class GroupPanelController {
         }
         lastGridSnapshot = grid;
 
+        int requiredInset = GroupBracketRenderer.GROUP_PANEL_WIDTH + 1;
+        if (grid.gridLeft() < requiredInset) {
+            EmiRuntimeAccess.ensureFavoritesSidebarInset(requiredInset, grid.gridLeft());
+        }
+
         List<Integer> rowGroupIds = grid.getPrimaryGroupIds();
         if (dragState != null) {
             applyDragPreview(rowGroupIds, grid);
@@ -334,8 +339,11 @@ public final class GroupPanelController {
         }
 
         boolean containsPanel(int mouseX, int mouseY) {
-            int panelLeft = gridLeft - GroupBracketRenderer.GROUP_PANEL_WIDTH;
+            int panelLeft = GroupBracketRenderer.getPanelLeft(gridLeft);
             int panelRight = gridLeft;
+            if (panelRight < panelLeft + GroupBracketRenderer.GROUP_PANEL_WIDTH) {
+                panelRight = panelLeft + GroupBracketRenderer.GROUP_PANEL_WIDTH;
+            }
             int top = gridTop();
             int bottom = rows.get(rows.size() - 1).y() + rowHeight;
             return mouseX >= panelLeft && mouseX < panelRight
