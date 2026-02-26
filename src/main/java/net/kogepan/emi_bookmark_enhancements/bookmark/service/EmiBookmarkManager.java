@@ -284,6 +284,7 @@ public final class EmiBookmarkManager {
                 cleanupEmptyGroup(entry.getGroupId());
             }
             dirty = true;
+            orderedEntries.removeIf(removedEntries::contains);
         }
 
         reorderEntries(orderedEntries);
