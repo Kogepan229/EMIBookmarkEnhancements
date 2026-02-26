@@ -1,6 +1,14 @@
 package net.kogepan.emi_bookmark_enhancements.bookmark.service;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import net.kogepan.emi_bookmark_enhancements.bookmark.model.EmiBookmarkEntry;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
+import net.minecraft.world.item.Item;
 
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -120,7 +128,7 @@ final class CraftingChainCalculator {
                 if (candidateResult == sourceResult || visited.contains(candidateResult)) {
                     continue;
                 }
-                if (candidateResult.getItemKey().equals(ingredient.getItemKey())) {
+                if (sameItemIdentity(candidateResult.getItemKey(), ingredient.getItemKey())) {
                     preferredItems.put(ingredient, candidateResult);
                     collectPreferredItems(candidateResult, groupEntries, results, preferredItems, visited);
                     break;
@@ -205,5 +213,149 @@ final class CraftingChainCalculator {
 
     private static Set<EmiBookmarkEntry> newIdentitySet() {
         return java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    }
+
+    private static boolean sameItemIdentity(String left, String right) {
+        ItemIdentity leftIdentity = parseItemIdentity(left);
+        ItemIdentity rightIdentity = parseItemIdentity(right);
+
+        if (!leftIdentity.id().isBlank() && !rightIdentity.id().isBlank()) {
+            if (leftIdentity.kind() == rightIdentity.kind()) {
+                return leftIdentity.id().equals(rightIdentity.id());
+            }
+            if (leftIdentity.kind() == ItemIdentityKind.TAG
+                    && rightIdentity.kind() == ItemIdentityKind.ITEM) {
+                return tagContainsItem(leftIdentity.id(), rightIdentity.id());
+            }
+            if (leftIdentity.kind() == ItemIdentityKind.ITEM
+                    && rightIdentity.kind() == ItemIdentityKind.TAG) {
+                return tagContainsItem(rightIdentity.id(), leftIdentity.id());
+            }
+            return leftIdentity.id().equals(rightIdentity.id());
+        }
+        return left != null && left.equals(right);
+    }
+
+    private static ItemIdentity parseItemIdentity(String key) {
+        if (key == null) {
+            return ItemIdentity.empty();
+        }
+        String trimmed = key.trim();
+        if (trimmed.isBlank()) {
+            return ItemIdentity.empty();
+        }
+        try {
+            JsonElement parsed = JsonParser.parseString(trimmed);
+            ItemIdentity identity = parseIdentityFromJson(parsed);
+            if (!identity.id().isBlank()) {
+                return identity;
+            }
+        } catch (Exception ignored) {
+        }
+        return parseIdentityFromLiteral(trimmed);
+    }
+
+    private static ItemIdentity parseIdentityFromJson(JsonElement element) {
+        if (element == null || element.isJsonNull()) {
+            return ItemIdentity.empty();
+        }
+        if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isString()) {
+            return parseIdentityFromLiteral(element.getAsString());
+        }
+        if (!element.isJsonObject()) {
+            return ItemIdentity.empty();
+        }
+
+        JsonObject object = element.getAsJsonObject();
+        String type = readString(object, "type");
+        String id = readString(object, "id");
+        if ("tag".equals(type) && !id.isBlank()) {
+            return new ItemIdentity(ItemIdentityKind.TAG, id);
+        }
+        if ("item".equals(type) && !id.isBlank()) {
+            return new ItemIdentity(ItemIdentityKind.ITEM, id);
+        }
+        if (!id.isBlank()) {
+            return new ItemIdentity(ItemIdentityKind.ITEM, id);
+        }
+        String item = readString(object, "item");
+        if (!item.isBlank()) {
+            return new ItemIdentity(ItemIdentityKind.ITEM, item);
+        }
+        String fluid = readString(object, "fluid");
+        if (!fluid.isBlank()) {
+            return new ItemIdentity(ItemIdentityKind.OTHER, fluid);
+        }
+        String stack = readString(object, "stack");
+        if (!stack.isBlank()) {
+            return parseIdentityFromLiteral(stack);
+        }
+        return ItemIdentity.empty();
+    }
+
+    private static String readString(JsonObject object, String key) {
+        if (object == null || key == null || !object.has(key)) {
+            return "";
+        }
+        try {
+            JsonElement value = object.get(key);
+            if (value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()) {
+                return value.getAsString();
+            }
+        } catch (Exception ignored) {
+        }
+        return "";
+    }
+
+    private static ItemIdentity parseIdentityFromLiteral(String value) {
+        if (value == null) {
+            return ItemIdentity.empty();
+        }
+        String normalized = value.trim();
+        while (normalized.length() >= 2 && normalized.startsWith("\"") && normalized.endsWith("\"")) {
+            normalized = normalized.substring(1, normalized.length() - 1).trim();
+        }
+        if (normalized.startsWith("#")) {
+            return new ItemIdentity(ItemIdentityKind.TAG, normalized.substring(1).trim());
+        }
+        if (normalized.startsWith("item:")) {
+            return new ItemIdentity(ItemIdentityKind.ITEM, normalized.substring("item:".length()).trim());
+        }
+        if (normalized.startsWith("fluid:")) {
+            return new ItemIdentity(ItemIdentityKind.OTHER, normalized.substring("fluid:".length()).trim());
+        }
+        if (normalized.startsWith("tag:")) {
+            return new ItemIdentity(ItemIdentityKind.TAG, normalized.substring("tag:".length()).trim());
+        }
+        return new ItemIdentity(ItemIdentityKind.ITEM, normalized);
+    }
+
+    private static boolean tagContainsItem(String tagId, String itemId) {
+        if (tagId == null || itemId == null || tagId.isBlank() || itemId.isBlank()) {
+            return false;
+        }
+        ResourceLocation tagLocation = ResourceLocation.tryParse(tagId);
+        ResourceLocation itemLocation = ResourceLocation.tryParse(itemId);
+        if (tagLocation == null || itemLocation == null) {
+            return false;
+        }
+        if (!BuiltInRegistries.ITEM.containsKey(itemLocation)) {
+            return false;
+        }
+        Item item = BuiltInRegistries.ITEM.get(itemLocation);
+        TagKey<Item> tagKey = TagKey.create(Registries.ITEM, tagLocation);
+        return item.builtInRegistryHolder().is(tagKey);
+    }
+
+    private enum ItemIdentityKind {
+        ITEM,
+        TAG,
+        OTHER
+    }
+
+    private record ItemIdentity(ItemIdentityKind kind, String id) {
+        private static ItemIdentity empty() {
+            return new ItemIdentity(ItemIdentityKind.OTHER, "");
+        }
     }
 }
