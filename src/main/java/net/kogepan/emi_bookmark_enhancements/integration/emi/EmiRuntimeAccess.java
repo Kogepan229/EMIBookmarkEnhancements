@@ -4,6 +4,7 @@ import dev.emi.emi.api.recipe.EmiRecipe;
 import dev.emi.emi.api.stack.EmiIngredient;
 import dev.emi.emi.api.stack.EmiStackInteraction;
 import net.kogepan.emi_bookmark_enhancements.EmiBookmarkEnhancements;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -84,6 +85,8 @@ public final class EmiRuntimeAccess {
     private static final Map<String, Integer> baseSidebarColumns = new HashMap<>();
     private static final Map<Object, int[]> baseFavoriteSpaceWidths = new IdentityHashMap<>();
     private static final Map<Object, Integer> baseFavoriteSpacePageSizes = new IdentityHashMap<>();
+    private static final Map<Object, Integer> stableFavoriteSpacePageSizes = new IdentityHashMap<>();
+    private static final Map<Object, Long> stableFavoriteSpaceSignatures = new IdentityHashMap<>();
 
     private EmiRuntimeAccess() {
     }
@@ -318,6 +321,52 @@ public final class EmiRuntimeAccess {
         return false;
     }
 
+    public static boolean hasVisibleFavoriteMultiplePages() {
+        if (!resolveSidebarHandles()) {
+            return false;
+        }
+        try {
+            Object value = panelsField.get(null);
+            if (!(value instanceof List<?> panels)) {
+                return false;
+            }
+            for (Object panel : panels) {
+                if (panel == null || !sidebarPanelClass.isInstance(panel)) {
+                    continue;
+                }
+                boolean isVisible = (boolean) sidebarPanelIsVisibleMethod.invoke(panel);
+                if (!isVisible) {
+                    continue;
+                }
+                Object spacesValue = sidebarPanelGetSpacesMethod.invoke(panel);
+                if (!(spacesValue instanceof List<?> spaces)) {
+                    continue;
+                }
+                for (Object space : spaces) {
+                    if (space == null || !screenSpaceClass.isInstance(space)) {
+                        continue;
+                    }
+                    Object type = screenSpaceGetTypeMethod.invoke(space);
+                    if (type == null || !Objects.equals(type.toString(), "FAVORITES")) {
+                        continue;
+                    }
+                    int pageSize = Math.max(1, screenSpacePageSizeField.getInt(space));
+                    int stackCount = getScreenSpaceStackCount(space);
+                    if (stackCount > pageSize) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to inspect favorites multiple pages state", e);
+        }
+        return false;
+    }
+
+    public static boolean resetFavoriteSpaceColumnOverrides() {
+        return clearFavoriteSpaceColumnOverrides();
+    }
+
     public static int removeFavoriteHandles(List<Object> handles) {
         if (handles == null || handles.isEmpty() || !resolveFavoriteMutationHandles()) {
             return 0;
@@ -546,45 +595,38 @@ public final class EmiRuntimeAccess {
 
                     seenSpaces.add(space);
                     int[] baseWidths = baseFavoriteSpaceWidths.computeIfAbsent(space, key -> widths.clone());
-                    baseFavoriteSpacePageSizes.putIfAbsent(space, screenSpacePageSizeField.getInt(space));
+                    int rawCurrentPageSize = Math.max(1, screenSpacePageSizeField.getInt(space));
+                    baseFavoriteSpacePageSizes.putIfAbsent(space, rawCurrentPageSize);
 
-                    int currentPageSize = Math.max(1, screenSpacePageSizeField.getInt(space));
-                    int startIndex = space == mainSpace ? Math.max(0, page) * currentPageSize : 0;
-                    int breakpointCursor = 0;
-                    while (breakpointCursor < normalizedBreakpoints.size()
-                            && normalizedBreakpoints.get(breakpointCursor) <= startIndex) {
-                        breakpointCursor++;
-                    }
+                    int stackCount = getScreenSpaceStackCount(space);
+                    int maxNaturalPageSize = sumClampedWidths(baseWidths, safeMaxColumns);
+                    int stablePageSize = resolveStableFavoritePageSize(
+                            space,
+                            baseWidths,
+                            safeMaxColumns,
+                            normalizedBreakpoints,
+                            stackCount,
+                            maxNaturalPageSize);
 
-                    int consumed = startIndex;
-                    int targetPageSize = 0;
+                    int startIndex = space == mainSpace ? Math.max(0, page) * stablePageSize : 0;
+                    int[] targetWidths = buildRowWidthsForStart(
+                            baseWidths,
+                            safeMaxColumns,
+                            normalizedBreakpoints,
+                            startIndex,
+                            stablePageSize);
+
                     for (int row = 0; row < widths.length; row++) {
-                        int baseWidth = row < baseWidths.length ? baseWidths[row] : widths[row];
-                        int target = Math.max(0, Math.min(baseWidth, safeMaxColumns));
-                        if (target > 0) {
-                            while (breakpointCursor < normalizedBreakpoints.size()
-                                    && normalizedBreakpoints.get(breakpointCursor) <= consumed) {
-                                breakpointCursor++;
-                            }
-                            if (breakpointCursor < normalizedBreakpoints.size()) {
-                                int nextBoundary = normalizedBreakpoints.get(breakpointCursor);
-                                if (nextBoundary > consumed && nextBoundary < consumed + target) {
-                                    target = Math.max(1, nextBoundary - consumed);
-                                }
-                            }
-                        }
-                        targetPageSize += target;
+                        int target = row < targetWidths.length ? targetWidths[row] : 0;
                         if (widths[row] != target) {
                             widths[row] = target;
                             changed = true;
                             markScreenSpaceBatcherDirty(space);
                         }
-                        consumed += target;
                     }
 
-                    int rawCurrentPageSize = screenSpacePageSizeField.getInt(space);
-                    if (rawCurrentPageSize != targetPageSize) {
-                        screenSpacePageSizeField.setInt(space, targetPageSize);
+                    if (rawCurrentPageSize != stablePageSize) {
+                        screenSpacePageSizeField.setInt(space, stablePageSize);
                         changed = true;
                         markScreenSpaceBatcherDirty(space);
                     }
@@ -995,9 +1037,14 @@ public final class EmiRuntimeAccess {
         if (!resolveSidebarHandles()) {
             baseFavoriteSpaceWidths.clear();
             baseFavoriteSpacePageSizes.clear();
+            stableFavoriteSpacePageSizes.clear();
+            stableFavoriteSpaceSignatures.clear();
             return false;
         }
-        if (baseFavoriteSpaceWidths.isEmpty() && baseFavoriteSpacePageSizes.isEmpty()) {
+        if (baseFavoriteSpaceWidths.isEmpty()
+                && baseFavoriteSpacePageSizes.isEmpty()
+                && stableFavoriteSpacePageSizes.isEmpty()
+                && stableFavoriteSpaceSignatures.isEmpty()) {
             return false;
         }
 
@@ -1036,6 +1083,8 @@ public final class EmiRuntimeAccess {
         }
         baseFavoriteSpaceWidths.clear();
         baseFavoriteSpacePageSizes.clear();
+        stableFavoriteSpacePageSizes.clear();
+        stableFavoriteSpaceSignatures.clear();
         return changed;
     }
 
@@ -1052,6 +1101,8 @@ public final class EmiRuntimeAccess {
         for (Object space : stale) {
             baseFavoriteSpaceWidths.remove(space);
             baseFavoriteSpacePageSizes.remove(space);
+            stableFavoriteSpacePageSizes.remove(space);
+            stableFavoriteSpaceSignatures.remove(space);
         }
     }
 
@@ -1078,6 +1129,184 @@ public final class EmiRuntimeAccess {
             }
         }
         return unique;
+    }
+
+    private static int resolveStableFavoritePageSize(Object space,
+                                                     int[] baseWidths,
+                                                     int maxColumns,
+                                                     List<Integer> breakpoints,
+                                                     int stackCount,
+                                                     int maxNaturalPageSize) {
+        if (space == null || baseWidths == null || baseWidths.length == 0) {
+            return 1;
+        }
+        int fallback = Math.max(1, countPositiveRows(baseWidths, maxColumns));
+        int naturalUpperBound = Math.max(fallback, maxNaturalPageSize);
+        long signature = buildStablePageSignature(baseWidths, maxColumns, breakpoints, stackCount, naturalUpperBound);
+
+        Long previousSignature = stableFavoriteSpaceSignatures.get(space);
+        Integer cached = stableFavoriteSpacePageSizes.get(space);
+        if (previousSignature != null && previousSignature == signature && cached != null && cached > 0) {
+            return cached;
+        }
+
+        int computed = computeStablePageSize(baseWidths, maxColumns, breakpoints, stackCount, naturalUpperBound, fallback);
+        stableFavoriteSpaceSignatures.put(space, signature);
+        stableFavoriteSpacePageSizes.put(space, computed);
+        return computed;
+    }
+
+    private static long buildStablePageSignature(int[] baseWidths,
+                                                 int maxColumns,
+                                                 List<Integer> breakpoints,
+                                                 int stackCount,
+                                                 int maxNaturalPageSize) {
+        long signature = 17L;
+        signature = signature * 31L + maxColumns;
+        signature = signature * 31L + stackCount;
+        signature = signature * 31L + maxNaturalPageSize;
+        signature = signature * 31L + java.util.Arrays.hashCode(baseWidths);
+        signature = signature * 31L + (breakpoints == null ? 0 : breakpoints.hashCode());
+        return signature;
+    }
+
+    private static int computeStablePageSize(int[] baseWidths,
+                                             int maxColumns,
+                                             List<Integer> breakpoints,
+                                             int stackCount,
+                                             int maxNaturalPageSize,
+                                             int fallback) {
+        int safeFallback = Math.max(1, fallback);
+        if (stackCount <= 0) {
+            return Math.max(safeFallback, Math.max(1, maxNaturalPageSize));
+        }
+
+        int minCapacity = Integer.MAX_VALUE;
+        int maxStart = Math.max(0, stackCount - 1);
+        for (int start = 0; start <= maxStart; start++) {
+            int capacity = computeNaturalCapacityForStart(baseWidths, maxColumns, breakpoints, start);
+            if (capacity <= 0) {
+                capacity = safeFallback;
+            }
+            if (capacity < minCapacity) {
+                minCapacity = capacity;
+                if (minCapacity <= safeFallback) {
+                    break;
+                }
+            }
+        }
+        if (minCapacity == Integer.MAX_VALUE) {
+            minCapacity = safeFallback;
+        }
+        minCapacity = Math.max(safeFallback, Math.min(minCapacity, Math.max(1, maxNaturalPageSize)));
+        return Math.max(1, minCapacity);
+    }
+
+    private static int computeNaturalCapacityForStart(int[] baseWidths,
+                                                      int maxColumns,
+                                                      List<Integer> breakpoints,
+                                                      int startIndex) {
+        int consumed = Math.max(0, startIndex);
+        int capacity = 0;
+        int cursor = 0;
+        while (cursor < breakpoints.size() && breakpoints.get(cursor) <= consumed) {
+            cursor++;
+        }
+
+        for (int baseWidth : baseWidths) {
+            int rowCap = Math.max(0, Math.min(baseWidth, maxColumns));
+            if (rowCap <= 0) {
+                continue;
+            }
+            if (cursor < breakpoints.size()) {
+                int nextBoundary = breakpoints.get(cursor);
+                if (nextBoundary > consumed && nextBoundary < consumed + rowCap) {
+                    rowCap = Math.max(1, nextBoundary - consumed);
+                }
+            }
+            capacity += rowCap;
+            consumed += rowCap;
+            while (cursor < breakpoints.size() && breakpoints.get(cursor) <= consumed) {
+                cursor++;
+            }
+        }
+        return capacity;
+    }
+
+    private static int[] buildRowWidthsForStart(int[] baseWidths,
+                                                int maxColumns,
+                                                List<Integer> breakpoints,
+                                                int startIndex,
+                                                int pageSize) {
+        int[] targets = new int[baseWidths.length];
+        int consumed = Math.max(0, startIndex);
+        int remaining = Math.max(1, pageSize);
+        int cursor = 0;
+        while (cursor < breakpoints.size() && breakpoints.get(cursor) <= consumed) {
+            cursor++;
+        }
+
+        for (int row = 0; row < baseWidths.length; row++) {
+            int rowCap = Math.max(0, Math.min(baseWidths[row], maxColumns));
+            if (rowCap <= 0 || remaining <= 0) {
+                targets[row] = 0;
+                continue;
+            }
+
+            int target = Math.min(rowCap, remaining);
+            if (cursor < breakpoints.size()) {
+                int nextBoundary = breakpoints.get(cursor);
+                if (nextBoundary > consumed && nextBoundary < consumed + target) {
+                    target = Math.max(1, nextBoundary - consumed);
+                }
+            }
+
+            targets[row] = target;
+            consumed += target;
+            remaining -= target;
+            while (cursor < breakpoints.size() && breakpoints.get(cursor) <= consumed) {
+                cursor++;
+            }
+        }
+        return targets;
+    }
+
+    private static int sumClampedWidths(int[] widths, int maxColumns) {
+        int sum = 0;
+        if (widths == null) {
+            return 0;
+        }
+        for (int width : widths) {
+            sum += Math.max(0, Math.min(width, maxColumns));
+        }
+        return sum;
+    }
+
+    private static int countPositiveRows(int[] widths, int maxColumns) {
+        int rows = 0;
+        if (widths == null) {
+            return 0;
+        }
+        for (int width : widths) {
+            if (Math.max(0, Math.min(width, maxColumns)) > 0) {
+                rows++;
+            }
+        }
+        return rows;
+    }
+
+    private static int getScreenSpaceStackCount(Object space) {
+        if (space == null || screenSpaceGetStacksMethod == null) {
+            return 0;
+        }
+        try {
+            Object stacks = screenSpaceGetStacksMethod.invoke(space);
+            if (stacks instanceof List<?> list) {
+                return list.size();
+            }
+        } catch (Exception ignored) {
+        }
+        return 0;
     }
 
     private static void markScreenSpaceBatcherDirty(Object space) {
