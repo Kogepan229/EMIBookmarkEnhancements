@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "net.kogepan.emi_bookmark_enhancements.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "client": [
+    "EmiFavoriteRenderMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

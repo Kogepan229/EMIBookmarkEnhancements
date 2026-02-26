@@ -1,6 +1,7 @@
 package net.kogepan.emi_bookmark_enhancements.overlay;
 
 import dev.emi.emi.api.stack.EmiIngredient;
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.kogepan.emi_bookmark_enhancements.bookmark.model.EmiBookmarkEntry;
 import net.kogepan.emi_bookmark_enhancements.bookmark.service.EmiBookmarkManager;
 import net.kogepan.emi_bookmark_enhancements.integration.emi.EmiRuntimeAccess;
@@ -31,6 +32,10 @@ public final class FavoriteQuantityOverlay {
             return;
         }
 
+        RenderSystem.enableDepthTest();
+        event.getGuiGraphics().pose().pushPose();
+        event.getGuiGraphics().pose().translate(0.0F, 0.0F, 250.0F);
+
         Font font = Minecraft.getInstance().font;
         for (EmiRuntimeAccess.FavoriteSlot slot : EmiRuntimeAccess.getVisibleFavoriteSlots()) {
             EmiBookmarkEntry entry = bookmarkManager.findEntry(slot.handle());
@@ -51,6 +56,8 @@ public final class FavoriteQuantityOverlay {
             };
             event.getGuiGraphics().drawString(font, amountText, x, y, color, true);
         }
+
+        event.getGuiGraphics().pose().popPose();
     }
 
     private static boolean isFluid(Object handle) {
