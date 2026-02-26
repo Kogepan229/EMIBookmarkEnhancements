@@ -1,11 +1,14 @@
 package net.kogepan.emi_bookmark_enhancements.integration.emi;
 
 import net.kogepan.emi_bookmark_enhancements.bookmark.persistence.BookmarkStore;
+import net.kogepan.emi_bookmark_enhancements.bookmark.persistence.LayoutStore;
 import net.kogepan.emi_bookmark_enhancements.bookmark.service.EmiBookmarkManager;
 import net.kogepan.emi_bookmark_enhancements.input.FavoriteScrollHandler;
 import net.kogepan.emi_bookmark_enhancements.input.RecipeShortcutHandler;
 import net.kogepan.emi_bookmark_enhancements.overlay.FavoriteQuantityOverlay;
 import net.kogepan.emi_bookmark_enhancements.overlay.FavoriteTooltipAugmenter;
+import net.kogepan.emi_bookmark_enhancements.overlay.GroupPanelController;
+import net.kogepan.emi_bookmark_enhancements.overlay.LayoutModeController;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
@@ -15,6 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class ClientLifecycleHooks {
     private static final EmiBookmarkManager BOOKMARK_MANAGER = new EmiBookmarkManager(new BookmarkStore());
+    private static final LayoutStore LAYOUT_STORE = new LayoutStore();
     private static final AtomicBoolean SHUTDOWN_HOOK_REGISTERED = new AtomicBoolean(false);
     private static final AtomicBoolean RUNTIME_EVENTS_REGISTERED = new AtomicBoolean(false);
     private static final int AUTOSAVE_TICK_INTERVAL = 100;
@@ -30,11 +34,13 @@ public final class ClientLifecycleHooks {
     public static void onClientSetup(FMLClientSetupEvent event) {
         event.enqueueWork(() -> {
             BOOKMARK_MANAGER.ensureLoaded();
+            LayoutModeController.register(LAYOUT_STORE);
             EmiFavoritesBridge.initialize(BOOKMARK_MANAGER);
             FavoriteScrollHandler.register(BOOKMARK_MANAGER);
             RecipeShortcutHandler.register(BOOKMARK_MANAGER);
             FavoriteQuantityOverlay.register(BOOKMARK_MANAGER);
             FavoriteTooltipAugmenter.register(BOOKMARK_MANAGER);
+            GroupPanelController.register(BOOKMARK_MANAGER);
             registerRuntimeEvents();
         });
         registerShutdownHook();
@@ -44,7 +50,10 @@ public final class ClientLifecycleHooks {
         if (!SHUTDOWN_HOOK_REGISTERED.compareAndSet(false, true)) {
             return;
         }
-        Runtime.getRuntime().addShutdownHook(new Thread(BOOKMARK_MANAGER::save,
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            BOOKMARK_MANAGER.save();
+            LayoutModeController.save();
+        },
                 "emi-bookmark-enhancements-save"));
     }
 
@@ -70,9 +79,13 @@ public final class ClientLifecycleHooks {
         if (BOOKMARK_MANAGER.isDirty()) {
             BOOKMARK_MANAGER.save();
         }
+        if (LayoutModeController.isDirty()) {
+            LayoutModeController.save();
+        }
     }
 
     private static void onClientLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         BOOKMARK_MANAGER.save();
+        LayoutModeController.save();
     }
 }

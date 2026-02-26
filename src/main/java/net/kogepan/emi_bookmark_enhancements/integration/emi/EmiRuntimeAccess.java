@@ -49,6 +49,9 @@ public final class EmiRuntimeAccess {
     private static Method sidebarPanelIsVisibleMethod;
     private static Method sidebarPanelGetSpacesMethod;
     private static Field screenSpacePageSizeField;
+    private static Field screenSpaceTxField;
+    private static Field screenSpaceTyField;
+    private static Field screenSpaceTwField;
     private static Method screenSpaceGetTypeMethod;
     private static Method screenSpaceGetStacksMethod;
     private static Method screenSpaceGetRawXMethod;
@@ -260,17 +263,79 @@ public final class EmiRuntimeAccess {
                 } catch (Exception e) {
                     EmiBookmarkEnhancements.LOGGER.debug("Failed to save EMI persistent data after favorite prune", e);
                 }
-                try {
-                    repopulatePanelsMethod.invoke(null, favoritesSidebarType);
-                } catch (Exception e) {
-                    EmiBookmarkEnhancements.LOGGER.debug("Failed to refresh EMI favorites after favorite prune", e);
-                }
+                refreshFavoritesSidebar();
             }
         } catch (Exception e) {
             EmiBookmarkEnhancements.LOGGER.debug("Failed to remove EMI favorite handles", e);
             return 0;
         }
         return removedCount;
+    }
+
+    public static void refreshFavoritesSidebar() {
+        if (!resolveFavoriteMutationHandles()) {
+            return;
+        }
+        try {
+            repopulatePanelsMethod.invoke(null, favoritesSidebarType);
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to refresh EMI favorites sidebar", e);
+        }
+    }
+
+    public static boolean isFavoriteHeaderLayoutToggleTarget(int mouseX, int mouseY) {
+        if (!resolveSidebarHandles()) {
+            return false;
+        }
+        try {
+            Object value = panelsField.get(null);
+            if (!(value instanceof List<?> panels)) {
+                return false;
+            }
+            for (Object panel : panels) {
+                if (panel == null || !sidebarPanelClass.isInstance(panel)) {
+                    continue;
+                }
+                boolean isVisible = (boolean) sidebarPanelIsVisibleMethod.invoke(panel);
+                if (!isVisible) {
+                    continue;
+                }
+                Object space = sidebarPanelSpaceField.get(panel);
+                if (space == null || !screenSpaceClass.isInstance(space)) {
+                    continue;
+                }
+                Object type = screenSpaceGetTypeMethod.invoke(space);
+                if (type == null || !"FAVORITES".equals(type.toString())) {
+                    continue;
+                }
+
+                int tx = screenSpaceTxField.getInt(space);
+                int ty = screenSpaceTyField.getInt(space);
+                int tw = screenSpaceTwField.getInt(space);
+                if (tw <= 0) {
+                    continue;
+                }
+
+                int headerTop = ty - 18;
+                int headerBottom = ty - 1;
+                int headerLeft = tx + 20;
+                int headerRight = tx + tw * 18 - 20;
+                if (headerRight <= headerLeft || mouseY < headerTop || mouseY > headerBottom) {
+                    continue;
+                }
+
+                int centerX = headerLeft + (headerRight - headerLeft) / 2;
+                int halfWidth = Math.min(32, Math.max(16, (headerRight - headerLeft) / 4));
+                int toggleLeft = centerX - halfWidth;
+                int toggleRight = centerX + halfWidth;
+                if (mouseX >= toggleLeft && mouseX <= toggleRight) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to inspect favorites header bounds", e);
+        }
+        return false;
     }
 
     private static boolean resolveRuntimeHandles() {
@@ -347,6 +412,9 @@ public final class EmiRuntimeAccess {
                 && sidebarPanelIsVisibleMethod != null
                 && sidebarPanelGetSpacesMethod != null
                 && screenSpacePageSizeField != null
+                && screenSpaceTxField != null
+                && screenSpaceTyField != null
+                && screenSpaceTwField != null
                 && screenSpaceGetTypeMethod != null
                 && screenSpaceGetStacksMethod != null
                 && screenSpaceGetRawXMethod != null
@@ -373,6 +441,12 @@ public final class EmiRuntimeAccess {
 
             screenSpacePageSizeField = screenSpaceClass.getDeclaredField("pageSize");
             screenSpacePageSizeField.setAccessible(true);
+            screenSpaceTxField = screenSpaceClass.getDeclaredField("tx");
+            screenSpaceTxField.setAccessible(true);
+            screenSpaceTyField = screenSpaceClass.getDeclaredField("ty");
+            screenSpaceTyField.setAccessible(true);
+            screenSpaceTwField = screenSpaceClass.getDeclaredField("tw");
+            screenSpaceTwField.setAccessible(true);
             screenSpaceGetTypeMethod = screenSpaceClass.getMethod("getType");
             screenSpaceGetStacksMethod = screenSpaceClass.getMethod("getStacks");
             screenSpaceGetRawXMethod = screenSpaceClass.getMethod("getRawX", int.class);

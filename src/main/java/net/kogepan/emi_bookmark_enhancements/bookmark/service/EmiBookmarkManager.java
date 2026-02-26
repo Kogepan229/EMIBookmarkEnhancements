@@ -368,6 +368,45 @@ public final class EmiBookmarkManager {
         return true;
     }
 
+    public synchronized boolean moveEntriesToGroup(Collection<EmiBookmarkEntry> movingEntries, int targetGroupId) {
+        ensureLoaded();
+        if (movingEntries == null || movingEntries.isEmpty()) {
+            return false;
+        }
+
+        int safeTargetGroupId = targetGroupId < 0 ? DEFAULT_GROUP_ID : targetGroupId;
+        ensureGroupExists(safeTargetGroupId);
+
+        Set<EmiBookmarkEntry> movingSet = Collections.newSetFromMap(new IdentityHashMap<>());
+        movingSet.addAll(movingEntries);
+
+        Set<Integer> touchedGroups = new LinkedHashSet<>();
+        boolean changed = false;
+        for (EmiBookmarkEntry entry : entries) {
+            if (!movingSet.contains(entry)) {
+                continue;
+            }
+            int oldGroupId = entry.getGroupId();
+            touchedGroups.add(oldGroupId);
+            if (oldGroupId != safeTargetGroupId) {
+                entry.setGroupId(safeTargetGroupId);
+                changed = true;
+            }
+        }
+
+        if (!changed) {
+            return false;
+        }
+
+        for (int groupId : touchedGroups) {
+            if (groupId != safeTargetGroupId) {
+                cleanupEmptyGroup(groupId);
+            }
+        }
+        dirty = true;
+        return true;
+    }
+
     public synchronized BookmarkStore.BookmarkSnapshot createSnapshot() {
         ensureLoaded();
 
