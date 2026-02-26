@@ -22,6 +22,7 @@ public final class EmiBookmarkManager {
     private final Map<Integer, EmiBookmarkGroup> groups = new LinkedHashMap<>();
     private final Map<Object, EmiBookmarkEntry> favoriteBindings = new IdentityHashMap<>();
     private final BookmarkStore store;
+    private final CraftingChainCalculator craftingChainCalculator = new CraftingChainCalculator();
 
     private int nextGroupId = DEFAULT_GROUP_ID + 1;
     private int currentAddingGroupId = DEFAULT_GROUP_ID;
@@ -285,7 +286,9 @@ public final class EmiBookmarkManager {
         if (entry == null || !entries.remove(entry)) {
             return false;
         }
+        int affectedGroupId = entry.getGroupId();
         favoriteBindings.entrySet().removeIf(e -> e.getValue() == entry);
+        recalculateCraftingChainInGroup(affectedGroupId);
         cleanupEmptyGroup(entry.getGroupId());
         dirty = true;
         return true;
@@ -318,8 +321,19 @@ public final class EmiBookmarkManager {
         if (entry == null || shift == 0L) {
             return;
         }
+        if (entry.isResult() && entry.getGroupId() != DEFAULT_GROUP_ID) {
+            if (shiftRecipeAmount(entry, shift)) {
+                recalculateCraftingChainInGroup(entry.getGroupId());
+                dirty = true;
+            }
+            return;
+        }
+
+        long before = entry.getMultiplier();
         entry.shiftMultiplier(shift);
-        dirty = true;
+        if (entry.getMultiplier() != before) {
+            dirty = true;
+        }
     }
 
     public synchronized void shiftGroupAmount(int groupId, long shift) {
@@ -340,10 +354,17 @@ public final class EmiBookmarkManager {
             currentMinMultiplier = 1L;
         }
         long nextMultiplier = Math.max(1L, currentMinMultiplier + shift);
+        boolean changed = false;
         for (EmiBookmarkEntry entry : groupEntries) {
-            entry.setMultiplier(nextMultiplier);
+            if (entry.getMultiplier() != nextMultiplier) {
+                entry.setMultiplier(nextMultiplier);
+                changed = true;
+            }
         }
-        dirty = true;
+        if (changed) {
+            dirty = true;
+        }
+        recalculateCraftingChainInGroup(groupId);
     }
 
     public synchronized boolean setGroupExpanded(int groupId, boolean expanded) {
@@ -365,6 +386,9 @@ public final class EmiBookmarkManager {
         }
         group.setCraftingChainEnabled(enabled);
         dirty = true;
+        if (enabled) {
+            recalculateCraftingChainInGroup(groupId);
+        }
         return true;
     }
 
@@ -403,8 +427,87 @@ public final class EmiBookmarkManager {
                 cleanupEmptyGroup(groupId);
             }
         }
+        Set<Integer> recalcTargets = new LinkedHashSet<>(touchedGroups);
+        recalcTargets.add(safeTargetGroupId);
+        for (int recalcGroupId : recalcTargets) {
+            recalculateCraftingChainInGroup(recalcGroupId);
+        }
         dirty = true;
         return true;
+    }
+
+    private boolean shiftRecipeAmount(EmiBookmarkEntry resultEntry, long shift) {
+        if (resultEntry == null || !resultEntry.isResult()) {
+            return false;
+        }
+        List<EmiBookmarkEntry> groupEntries = getGroupEntries(resultEntry.getGroupId());
+        if (groupEntries.isEmpty()) {
+            return false;
+        }
+
+        long currentMultiplier = resultEntry.getMultiplier();
+        long nextMultiplier = shiftMultiplier(currentMultiplier, shift);
+        if (nextMultiplier == currentMultiplier) {
+            return false;
+        }
+
+        int resultCount = 0;
+        for (EmiBookmarkEntry entry : groupEntries) {
+            if (entry.isResult()) {
+                resultCount++;
+            }
+        }
+
+        boolean changed = false;
+        if (resultCount <= 1) {
+            for (EmiBookmarkEntry entry : groupEntries) {
+                if (entry.getMultiplier() != nextMultiplier) {
+                    entry.setMultiplier(nextMultiplier);
+                    changed = true;
+                }
+            }
+            return changed;
+        }
+
+        int index = groupEntries.indexOf(resultEntry);
+        if (index < 0) {
+            return false;
+        }
+        if (resultEntry.getMultiplier() != nextMultiplier) {
+            resultEntry.setMultiplier(nextMultiplier);
+            changed = true;
+        }
+        for (int i = index + 1; i < groupEntries.size(); i++) {
+            EmiBookmarkEntry next = groupEntries.get(i);
+            if (next.isResult() || next.getType() == EmiBookmarkEntry.EntryType.ITEM) {
+                break;
+            }
+            if (next.isIngredient() && next.getMultiplier() != nextMultiplier) {
+                next.setMultiplier(nextMultiplier);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    private static long shiftMultiplier(long multiplier, long shift) {
+        long next = multiplier + shift;
+        if (shift > 0L && next < multiplier) {
+            next = Long.MAX_VALUE;
+        } else if (shift < 0L && next > multiplier) {
+            next = 1L;
+        }
+        return Math.max(1L, next);
+    }
+
+    private void recalculateCraftingChainInGroup(int groupId) {
+        EmiBookmarkGroup group = groups.get(groupId);
+        if (group == null || !group.isCraftingChainEnabled()) {
+            return;
+        }
+        if (craftingChainCalculator.recalculateGroup(entries, groupId)) {
+            dirty = true;
+        }
     }
 
     public synchronized BookmarkStore.BookmarkSnapshot createSnapshot() {
