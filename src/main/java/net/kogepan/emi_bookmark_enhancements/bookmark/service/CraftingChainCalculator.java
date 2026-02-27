@@ -38,26 +38,27 @@ final class CraftingChainCalculator {
             collectPreferredItems(result, groupEntries, results, preferredItems, newIdentitySet());
         }
 
-        EmiBookmarkEntry firstResult = results.get(0);
+        List<EmiBookmarkEntry> rootResults = collectRootResults(results, groupEntries, preferredItems);
+        if (rootResults.isEmpty()) {
+            rootResults = List.of(results.get(0));
+        }
+
         Map<EmiBookmarkEntry, Long> requiredAmount = new IdentityHashMap<>();
         Map<EmiBookmarkEntry, Long> currentAmount = new IdentityHashMap<>();
         for (EmiBookmarkEntry result : results) {
-            if (result == firstResult) {
-                currentAmount.put(result, result.getAmount());
-            } else {
-                currentAmount.put(result, 0L);
-            }
+            currentAmount.put(result, 0L);
         }
 
-        long topMultiplier = firstResult.getMultiplier();
-        calculateChainRequirements(firstResult, topMultiplier, groupEntries, preferredItems,
-                requiredAmount, currentAmount, newIdentitySet());
+        for (EmiBookmarkEntry root : rootResults) {
+            long explicitAmount = root.getAmount();
+            currentAmount.put(root, explicitAmount);
+            long rootMultiplier = ceilDiv(explicitAmount, root.getFactor());
+            calculateChainRequirements(root, rootMultiplier, groupEntries, preferredItems,
+                    requiredAmount, currentAmount, newIdentitySet());
+        }
 
         boolean changed = false;
         for (EmiBookmarkEntry result : results) {
-            if (result == firstResult) {
-                continue;
-            }
             long amount = currentAmount.getOrDefault(result, 0L);
             if (amount <= 0L) {
                 continue;
@@ -137,6 +138,28 @@ final class CraftingChainCalculator {
         }
 
         visited.remove(sourceResult);
+    }
+
+    private static List<EmiBookmarkEntry> collectRootResults(List<EmiBookmarkEntry> results,
+                                                             List<EmiBookmarkEntry> groupEntries,
+                                                             Map<EmiBookmarkEntry, EmiBookmarkEntry> preferredItems) {
+        Set<EmiBookmarkEntry> dependentResults = newIdentitySet();
+        for (EmiBookmarkEntry result : results) {
+            for (EmiBookmarkEntry ingredient : findRecipeIngredients(result, groupEntries)) {
+                EmiBookmarkEntry mappedResult = preferredItems.get(ingredient);
+                if (mappedResult != null) {
+                    dependentResults.add(mappedResult);
+                }
+            }
+        }
+
+        List<EmiBookmarkEntry> roots = new ArrayList<>();
+        for (EmiBookmarkEntry result : results) {
+            if (!dependentResults.contains(result)) {
+                roots.add(result);
+            }
+        }
+        return roots;
     }
 
     private static List<EmiBookmarkEntry> findRecipeIngredients(EmiBookmarkEntry result,
