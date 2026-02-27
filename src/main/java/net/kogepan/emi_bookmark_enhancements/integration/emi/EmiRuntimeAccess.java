@@ -87,6 +87,7 @@ public final class EmiRuntimeAccess {
     private static final Map<Object, Integer> baseFavoriteSpacePageSizes = new IdentityHashMap<>();
     private static final Map<Object, Integer> stableFavoriteSpacePageSizes = new IdentityHashMap<>();
     private static final Map<Object, Long> stableFavoriteSpaceSignatures = new IdentityHashMap<>();
+    private static final Map<Object, FavoritePagePlan> favoritePagePlans = new IdentityHashMap<>();
 
     private EmiRuntimeAccess() {
     }
@@ -246,11 +247,16 @@ public final class EmiRuntimeAccess {
                         continue;
                     }
 
-                    int startIndex = space == mainSpace ? Math.max(0, page) * pageSize : 0;
+                    int startIndex = space == mainSpace
+                            ? getFavoriteDisplayStartIndex(panel, page, Math.max(0, page) * pageSize)
+                            : 0;
                     if (startIndex >= stacks.size()) {
                         continue;
                     }
-                    int endIndex = Math.min(startIndex + pageSize, stacks.size());
+                    int visibleCount = space == mainSpace
+                            ? getFavoriteDisplayPageSize(panel, page, pageSize)
+                            : pageSize;
+                    int endIndex = Math.min(startIndex + Math.max(1, visibleCount), stacks.size());
                     for (int i = startIndex; i < endIndex; i++) {
                         int localIndex = i - startIndex;
                         int x = (int) screenSpaceGetRawXMethod.invoke(space, localIndex);
@@ -365,6 +371,46 @@ public final class EmiRuntimeAccess {
 
     public static boolean resetFavoriteSpaceColumnOverrides() {
         return clearFavoriteSpaceColumnOverrides();
+    }
+
+    public static int getFavoriteDisplayTotalPages(Object panel, int fallbackTotalPages) {
+        FavoritePagePlan plan = favoritePagePlans.get(panel);
+        if (plan == null) {
+            return Math.max(1, fallbackTotalPages);
+        }
+        return plan.totalPages();
+    }
+
+    public static int getFavoriteDisplayStartIndex(Object panel, int page, int fallbackStartIndex) {
+        FavoritePagePlan plan = favoritePagePlans.get(panel);
+        if (plan == null) {
+            return Math.max(0, fallbackStartIndex);
+        }
+        return plan.startForPage(page);
+    }
+
+    public static int getFavoriteDisplayPageSize(Object panel, int page, int fallbackPageSize) {
+        FavoritePagePlan plan = favoritePagePlans.get(panel);
+        if (plan == null) {
+            return Math.max(1, fallbackPageSize);
+        }
+        return plan.sizeForPage(page);
+    }
+
+    public static int clampFavoriteDisplayPage(Object panel, int page) {
+        FavoritePagePlan plan = favoritePagePlans.get(panel);
+        if (plan == null) {
+            return Math.max(0, page);
+        }
+        return plan.clampPage(page);
+    }
+
+    public static boolean hasFavoriteDisplayMultiplePages(Object panel, boolean fallback) {
+        FavoritePagePlan plan = favoritePagePlans.get(panel);
+        if (plan == null) {
+            return fallback;
+        }
+        return plan.totalPages() > 1;
     }
 
     public static int removeFavoriteHandles(List<Object> handles) {
@@ -564,6 +610,7 @@ public final class EmiRuntimeAccess {
         List<Integer> normalizedBreakpoints = normalizeBreakpoints(breakpoints);
         boolean changed = false;
         Set<Object> seenSpaces = Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<Object> seenPanels = Collections.newSetFromMap(new IdentityHashMap<>());
         try {
             Object panelsValue = panelsField.get(null);
             if (!(panelsValue instanceof List<?> panels)) {
@@ -574,12 +621,14 @@ public final class EmiRuntimeAccess {
                 if (panel == null || !sidebarPanelClass.isInstance(panel)) {
                     continue;
                 }
-                int page = sidebarPanelPageField.getInt(panel);
                 Object mainSpace = sidebarPanelSpaceField.get(panel);
                 Object spacesValue = sidebarPanelGetSpacesMethod.invoke(panel);
                 if (!(spacesValue instanceof List<?> spaces)) {
                     continue;
                 }
+
+                int panelPage = sidebarPanelPageField.getInt(panel);
+                FavoritePagePlan panelPlan = null;
                 for (Object space : spaces) {
                     if (space == null || !screenSpaceClass.isInstance(space)) {
                         continue;
@@ -598,23 +647,37 @@ public final class EmiRuntimeAccess {
                     int rawCurrentPageSize = Math.max(1, screenSpacePageSizeField.getInt(space));
                     baseFavoriteSpacePageSizes.putIfAbsent(space, rawCurrentPageSize);
 
-                    int stackCount = getScreenSpaceStackCount(space);
-                    int maxNaturalPageSize = sumClampedWidths(baseWidths, safeMaxColumns);
-                    int stablePageSize = resolveStableFavoritePageSize(
-                            space,
-                            baseWidths,
-                            safeMaxColumns,
-                            normalizedBreakpoints,
-                            stackCount,
-                            maxNaturalPageSize);
+                    if (space == mainSpace) {
+                        int stackCount = getScreenSpaceStackCount(space);
+                        panelPlan = buildFavoritePagePlan(baseWidths, safeMaxColumns, normalizedBreakpoints, stackCount);
+                        favoritePagePlans.put(panel, panelPlan);
+                        seenPanels.add(panel);
+                    } else if (panelPlan == null) {
+                        panelPlan = favoritePagePlans.get(panel);
+                    }
 
-                    int startIndex = space == mainSpace ? Math.max(0, page) * stablePageSize : 0;
-                    int[] targetWidths = buildRowWidthsForStart(
-                            baseWidths,
+                    int pageForSpace = 0;
+                    int pageSizeForSpace = rawCurrentPageSize;
+                    int startIndex = 0;
+                    if (panelPlan != null) {
+                        if (space == mainSpace) {
+                            int clampedPage = panelPlan.clampPage(panelPage);
+                            if (clampedPage != panelPage) {
+                                sidebarPanelPageField.setInt(panel, clampedPage);
+                                panelPage = clampedPage;
+                                changed = true;
+                            }
+                            pageForSpace = panelPage;
+                        }
+                        startIndex = panelPlan.startForPage(pageForSpace);
+                        pageSizeForSpace = panelPlan.sizeForPage(pageForSpace);
+                    }
+
+                    int[] targetWidths = buildRowWidthsForStart(baseWidths,
                             safeMaxColumns,
                             normalizedBreakpoints,
                             startIndex,
-                            stablePageSize);
+                            pageSizeForSpace);
 
                     for (int row = 0; row < widths.length; row++) {
                         int target = row < targetWidths.length ? targetWidths[row] : 0;
@@ -625,8 +688,8 @@ public final class EmiRuntimeAccess {
                         }
                     }
 
-                    if (rawCurrentPageSize != stablePageSize) {
-                        screenSpacePageSizeField.setInt(space, stablePageSize);
+                    if (rawCurrentPageSize != pageSizeForSpace) {
+                        screenSpacePageSizeField.setInt(space, pageSizeForSpace);
                         changed = true;
                         markScreenSpaceBatcherDirty(space);
                     }
@@ -637,6 +700,7 @@ public final class EmiRuntimeAccess {
             return false;
         } finally {
             cleanupFavoriteSpaceBaseCaches(seenSpaces);
+            cleanupFavoritePagePlans(seenPanels);
         }
         return changed;
     }
@@ -1039,12 +1103,14 @@ public final class EmiRuntimeAccess {
             baseFavoriteSpacePageSizes.clear();
             stableFavoriteSpacePageSizes.clear();
             stableFavoriteSpaceSignatures.clear();
+            favoritePagePlans.clear();
             return false;
         }
         if (baseFavoriteSpaceWidths.isEmpty()
                 && baseFavoriteSpacePageSizes.isEmpty()
                 && stableFavoriteSpacePageSizes.isEmpty()
-                && stableFavoriteSpaceSignatures.isEmpty()) {
+                && stableFavoriteSpaceSignatures.isEmpty()
+                && favoritePagePlans.isEmpty()) {
             return false;
         }
 
@@ -1085,6 +1151,7 @@ public final class EmiRuntimeAccess {
         baseFavoriteSpacePageSizes.clear();
         stableFavoriteSpacePageSizes.clear();
         stableFavoriteSpaceSignatures.clear();
+        favoritePagePlans.clear();
         return changed;
     }
 
@@ -1104,6 +1171,50 @@ public final class EmiRuntimeAccess {
             stableFavoriteSpacePageSizes.remove(space);
             stableFavoriteSpaceSignatures.remove(space);
         }
+    }
+
+    private static void cleanupFavoritePagePlans(Set<Object> seenPanels) {
+        if (seenPanels == null) {
+            return;
+        }
+        List<Object> stale = new ArrayList<>();
+        for (Object panel : favoritePagePlans.keySet()) {
+            if (!seenPanels.contains(panel)) {
+                stale.add(panel);
+            }
+        }
+        for (Object panel : stale) {
+            favoritePagePlans.remove(panel);
+        }
+    }
+
+    private static FavoritePagePlan buildFavoritePagePlan(int[] baseWidths,
+                                                          int maxColumns,
+                                                          List<Integer> breakpoints,
+                                                          int stackCount) {
+        int safeStackCount = Math.max(0, stackCount);
+        int fallback = Math.max(1, countPositiveRows(baseWidths, maxColumns));
+        List<Integer> starts = new ArrayList<>();
+        List<Integer> sizes = new ArrayList<>();
+
+        if (safeStackCount == 0) {
+            starts.add(0);
+            sizes.add(fallback);
+            return new FavoritePagePlan(starts, sizes);
+        }
+
+        int start = 0;
+        while (start < safeStackCount) {
+            int naturalCapacity = computeNaturalCapacityForStart(baseWidths, maxColumns, breakpoints, start);
+            if (naturalCapacity <= 0) {
+                naturalCapacity = fallback;
+            }
+            int pageSize = Math.max(1, Math.min(naturalCapacity, safeStackCount - start));
+            starts.add(start);
+            sizes.add(pageSize);
+            start += pageSize;
+        }
+        return new FavoritePagePlan(starts, sizes);
     }
 
     private static List<Integer> normalizeBreakpoints(List<Integer> breakpoints) {
@@ -1346,6 +1457,44 @@ public final class EmiRuntimeAccess {
             case "BOTTOM" -> bottomSidebarSizeField;
             default -> null;
         };
+    }
+
+    private record FavoritePagePlan(List<Integer> starts, List<Integer> sizes) {
+        private FavoritePagePlan {
+            starts = starts == null ? List.of() : List.copyOf(starts);
+            sizes = sizes == null ? List.of() : List.copyOf(sizes);
+        }
+
+        int totalPages() {
+            return Math.max(1, Math.min(starts.size(), sizes.size()));
+        }
+
+        int clampPage(int page) {
+            int total = totalPages();
+            if (page < 0) {
+                return 0;
+            }
+            if (page >= total) {
+                return total - 1;
+            }
+            return page;
+        }
+
+        int startForPage(int page) {
+            int index = clampPage(page);
+            if (index < starts.size()) {
+                return Math.max(0, starts.get(index));
+            }
+            return 0;
+        }
+
+        int sizeForPage(int page) {
+            int index = clampPage(page);
+            if (index < sizes.size()) {
+                return Math.max(1, sizes.get(index));
+            }
+            return 1;
+        }
     }
 
     private static final class SetByIdentity<T> {

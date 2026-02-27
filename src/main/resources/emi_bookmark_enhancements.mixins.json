@@ -5,7 +5,8 @@
   "compatibilityLevel": "JAVA_17",
   "client": [
     "EmiFavoriteRenderMixin",
-    "EmiRenderHelperTooltipMixin"
+    "EmiRenderHelperTooltipMixin",
+    "EmiSidebarPanelPagingMixin"
   ],
   "injectors": {
     "defaultRequire": 1
