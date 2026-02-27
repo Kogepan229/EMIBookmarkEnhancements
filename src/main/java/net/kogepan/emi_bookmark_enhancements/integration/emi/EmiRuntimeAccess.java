@@ -1181,25 +1181,37 @@ public final class EmiRuntimeAccess {
             return Math.max(safeFallback, Math.max(1, maxNaturalPageSize));
         }
 
-        int minCapacity = Integer.MAX_VALUE;
-        int maxStart = Math.max(0, stackCount - 1);
-        for (int start = 0; start <= maxStart; start++) {
+        int upperBound = Math.max(
+                safeFallback,
+                Math.min(Math.max(1, maxNaturalPageSize), Math.max(1, stackCount)));
+        for (int candidate = upperBound; candidate >= safeFallback; candidate--) {
+            if (isValidStablePageSize(baseWidths, maxColumns, breakpoints, stackCount, candidate)) {
+                return candidate;
+            }
+        }
+        return safeFallback;
+    }
+
+    private static boolean isValidStablePageSize(int[] baseWidths,
+                                                 int maxColumns,
+                                                 List<Integer> breakpoints,
+                                                 int stackCount,
+                                                 int candidatePageSize) {
+        if (candidatePageSize <= 0 || stackCount < 0) {
+            return false;
+        }
+        if (stackCount == 0) {
+            return true;
+        }
+        for (int start = 0; start < stackCount; start += candidatePageSize) {
+            int remaining = stackCount - start;
+            int required = Math.min(candidatePageSize, remaining);
             int capacity = computeNaturalCapacityForStart(baseWidths, maxColumns, breakpoints, start);
-            if (capacity <= 0) {
-                capacity = safeFallback;
-            }
-            if (capacity < minCapacity) {
-                minCapacity = capacity;
-                if (minCapacity <= safeFallback) {
-                    break;
-                }
+            if (capacity < required) {
+                return false;
             }
         }
-        if (minCapacity == Integer.MAX_VALUE) {
-            minCapacity = safeFallback;
-        }
-        minCapacity = Math.max(safeFallback, Math.min(minCapacity, Math.max(1, maxNaturalPageSize)));
-        return Math.max(1, minCapacity);
+        return true;
     }
 
     private static int computeNaturalCapacityForStart(int[] baseWidths,
