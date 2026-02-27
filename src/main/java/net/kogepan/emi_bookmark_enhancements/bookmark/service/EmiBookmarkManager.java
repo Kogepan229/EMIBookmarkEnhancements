@@ -205,9 +205,11 @@ public final class EmiBookmarkManager {
     public synchronized FavoriteSyncResult synchronizeFavorites(List<FavoriteHandleData> favorites) {
         ensureLoaded();
         List<FavoriteHandleData> safeFavorites = favorites == null ? List.of() : favorites;
+        List<EmiBookmarkEntry> previousEntries = new ArrayList<>(entries);
 
         Set<Object> activeHandles = Collections.newSetFromMap(new IdentityHashMap<>());
         List<EmiBookmarkEntry> orderedEntries = new ArrayList<>(safeFavorites.size());
+        Map<EmiBookmarkEntry, Object> entryToHandle = new IdentityHashMap<>();
         List<EmiBookmarkEntry> availableEntries = new ArrayList<>(entries);
 
         for (FavoriteHandleData favorite : safeFavorites) {
@@ -238,6 +240,7 @@ public final class EmiBookmarkManager {
                 favoriteBindings.put(favorite.handle(), entry);
             }
             orderedEntries.add(entry);
+            entryToHandle.put(entry, favorite.handle());
         }
 
         Set<EmiBookmarkEntry> removedEntries = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -287,8 +290,26 @@ public final class EmiBookmarkManager {
             orderedEntries.removeIf(removedEntries::contains);
         }
 
+        List<Object> orderedHandles = new ArrayList<>(orderedEntries.size());
+        for (EmiBookmarkEntry entry : orderedEntries) {
+            Object handle = entryToHandle.get(entry);
+            if (handle == null) {
+                continue;
+            }
+            orderedHandles.add(handle);
+        }
+
+        OrderNormalizationResult normalization = normalizeRecipeUnitDragOrder(previousEntries, orderedEntries, orderedHandles);
+        List<EmiBookmarkEntry> finalOrderedEntries = normalization.orderedEntries();
+        List<Object> finalOrderedHandles = normalization.orderedHandles();
+
+        if (normalization.changed()) {
+            orderedEntries = new ArrayList<>(finalOrderedEntries);
+        }
+
         reorderEntries(orderedEntries);
-        return new FavoriteSyncResult(new ArrayList<>(handlesToPrune), removedEntries.size());
+        List<Object> handlesToReorder = normalization.changed() ? finalOrderedHandles : List.of();
+        return new FavoriteSyncResult(new ArrayList<>(handlesToPrune), removedEntries.size(), handlesToReorder);
     }
 
     public synchronized boolean removeEntry(EmiBookmarkEntry entry) {
@@ -663,6 +684,219 @@ public final class EmiBookmarkManager {
         return unitEntries;
     }
 
+    private OrderNormalizationResult normalizeRecipeUnitDragOrder(List<EmiBookmarkEntry> previousEntries,
+                                                                  List<EmiBookmarkEntry> orderedEntries,
+                                                                  List<Object> orderedHandles) {
+        if (orderedEntries == null
+                || orderedEntries.isEmpty()
+                || orderedHandles == null
+                || orderedEntries.size() != orderedHandles.size()) {
+            return OrderNormalizationResult.unchanged(orderedEntries, orderedHandles);
+        }
+
+        Set<EmiBookmarkEntry> orderedSet = Collections.newSetFromMap(new IdentityHashMap<>());
+        orderedSet.addAll(orderedEntries);
+        List<EmiBookmarkEntry> filteredPrevious = new ArrayList<>(orderedEntries.size());
+        for (EmiBookmarkEntry entry : previousEntries) {
+            if (orderedSet.contains(entry)) {
+                filteredPrevious.add(entry);
+            }
+        }
+        if (filteredPrevious.size() != orderedEntries.size() || !sameIdentitySet(filteredPrevious, orderedEntries)) {
+            return OrderNormalizationResult.unchanged(orderedEntries, orderedHandles);
+        }
+
+        EntryMove detectedMove = detectSingleEntryMove(filteredPrevious, orderedEntries);
+        if (detectedMove == null || detectedMove.entry() == null) {
+            return OrderNormalizationResult.unchanged(orderedEntries, orderedHandles);
+        }
+
+        RecipeUnitLayout unitLayout = buildRecipeUnitLayout(filteredPrevious);
+        List<EmiBookmarkEntry> movingUnit = unitLayout.unitByEntry().get(detectedMove.entry());
+        if (movingUnit == null || movingUnit.size() <= 1) {
+            return OrderNormalizationResult.unchanged(orderedEntries, orderedHandles);
+        }
+
+        Set<EmiBookmarkEntry> movingSet = Collections.newSetFromMap(new IdentityHashMap<>());
+        movingSet.addAll(movingUnit);
+
+        int movedIndex = orderedEntries.indexOf(detectedMove.entry());
+        if (movedIndex < 0) {
+            return OrderNormalizationResult.unchanged(orderedEntries, orderedHandles);
+        }
+
+        EmiBookmarkEntry previousExternal = null;
+        for (int index = movedIndex - 1; index >= 0; index--) {
+            EmiBookmarkEntry candidate = orderedEntries.get(index);
+            if (!movingSet.contains(candidate)) {
+                previousExternal = candidate;
+                break;
+            }
+        }
+
+        EmiBookmarkEntry nextExternal = null;
+        for (int index = movedIndex + 1; index < orderedEntries.size(); index++) {
+            EmiBookmarkEntry candidate = orderedEntries.get(index);
+            if (!movingSet.contains(candidate)) {
+                nextExternal = candidate;
+                break;
+            }
+        }
+
+        List<List<EmiBookmarkEntry>> normalizedUnits = new ArrayList<>(unitLayout.units().size());
+        for (List<EmiBookmarkEntry> unit : unitLayout.units()) {
+            normalizedUnits.add(new ArrayList<>(unit));
+        }
+
+        int sourceUnitIndex = findUnitIndexContaining(normalizedUnits, detectedMove.entry());
+        if (sourceUnitIndex < 0) {
+            return OrderNormalizationResult.unchanged(orderedEntries, orderedHandles);
+        }
+        List<EmiBookmarkEntry> detachedUnit = normalizedUnits.remove(sourceUnitIndex);
+
+        int insertIndex = normalizedUnits.size();
+        if (previousExternal != null) {
+            int previousUnitIndex = findUnitIndexContaining(normalizedUnits, previousExternal);
+            if (previousUnitIndex >= 0) {
+                insertIndex = previousUnitIndex + 1;
+            }
+        } else if (nextExternal != null) {
+            int nextUnitIndex = findUnitIndexContaining(normalizedUnits, nextExternal);
+            if (nextUnitIndex >= 0) {
+                insertIndex = nextUnitIndex;
+            }
+        } else {
+            insertIndex = 0;
+        }
+        insertIndex = Math.max(0, Math.min(insertIndex, normalizedUnits.size()));
+        normalizedUnits.add(insertIndex, detachedUnit);
+
+        List<EmiBookmarkEntry> normalizedEntries = flattenUnits(normalizedUnits);
+        if (normalizedEntries.size() != orderedEntries.size() || sameOrder(orderedEntries, normalizedEntries)) {
+            return OrderNormalizationResult.unchanged(orderedEntries, orderedHandles);
+        }
+
+        Map<EmiBookmarkEntry, Object> handlesByEntry = new IdentityHashMap<>();
+        for (int index = 0; index < orderedEntries.size(); index++) {
+            handlesByEntry.put(orderedEntries.get(index), orderedHandles.get(index));
+        }
+
+        List<Object> normalizedHandles = new ArrayList<>(normalizedEntries.size());
+        for (EmiBookmarkEntry entry : normalizedEntries) {
+            Object handle = handlesByEntry.get(entry);
+            if (handle == null) {
+                return OrderNormalizationResult.unchanged(orderedEntries, orderedHandles);
+            }
+            normalizedHandles.add(handle);
+        }
+
+        if (sameIdentityOrder(orderedHandles, normalizedHandles)) {
+            return OrderNormalizationResult.unchanged(orderedEntries, orderedHandles);
+        }
+        return OrderNormalizationResult.changed(normalizedEntries, normalizedHandles);
+    }
+
+    private static EntryMove detectSingleEntryMove(List<EmiBookmarkEntry> before, List<EmiBookmarkEntry> after) {
+        if (before == null || after == null || before.size() != after.size()) {
+            return null;
+        }
+        int firstMismatch = -1;
+        int lastMismatch = -1;
+        for (int index = 0; index < before.size(); index++) {
+            if (before.get(index) != after.get(index)) {
+                if (firstMismatch < 0) {
+                    firstMismatch = index;
+                }
+                lastMismatch = index;
+            }
+        }
+
+        if (firstMismatch < 0 || lastMismatch < 0) {
+            return null;
+        }
+        if (before.get(firstMismatch) == after.get(lastMismatch)) {
+            boolean validForwardMove = true;
+            for (int index = firstMismatch; index < lastMismatch; index++) {
+                if (before.get(index + 1) != after.get(index)) {
+                    validForwardMove = false;
+                    break;
+                }
+            }
+            if (validForwardMove) {
+                return new EntryMove(before.get(firstMismatch), lastMismatch);
+            }
+        }
+        if (before.get(lastMismatch) == after.get(firstMismatch)) {
+            boolean validBackwardMove = true;
+            for (int index = firstMismatch; index < lastMismatch; index++) {
+                if (before.get(index) != after.get(index + 1)) {
+                    validBackwardMove = false;
+                    break;
+                }
+            }
+            if (validBackwardMove) {
+                return new EntryMove(before.get(lastMismatch), firstMismatch);
+            }
+        }
+        return null;
+    }
+
+    private static RecipeUnitLayout buildRecipeUnitLayout(List<EmiBookmarkEntry> orderedEntries) {
+        List<List<EmiBookmarkEntry>> units = new ArrayList<>();
+        Map<EmiBookmarkEntry, List<EmiBookmarkEntry>> unitByEntry = new IdentityHashMap<>();
+
+        List<EmiBookmarkEntry> currentRecipeUnit = null;
+        int currentRecipeGroupId = DEFAULT_GROUP_ID;
+        for (EmiBookmarkEntry entry : orderedEntries) {
+            if (entry.isResult()) {
+                currentRecipeUnit = new ArrayList<>();
+                currentRecipeUnit.add(entry);
+                units.add(currentRecipeUnit);
+                currentRecipeGroupId = entry.getGroupId();
+                continue;
+            }
+            if (entry.isIngredient() && currentRecipeUnit != null && entry.getGroupId() == currentRecipeGroupId) {
+                currentRecipeUnit.add(entry);
+                continue;
+            }
+
+            currentRecipeUnit = null;
+            currentRecipeGroupId = DEFAULT_GROUP_ID;
+            List<EmiBookmarkEntry> singleton = new ArrayList<>(1);
+            singleton.add(entry);
+            units.add(singleton);
+        }
+
+        for (List<EmiBookmarkEntry> unit : units) {
+            for (EmiBookmarkEntry entry : unit) {
+                unitByEntry.put(entry, unit);
+            }
+        }
+        return new RecipeUnitLayout(units, unitByEntry);
+    }
+
+    private static int findUnitIndexContaining(List<List<EmiBookmarkEntry>> units, EmiBookmarkEntry entry) {
+        if (entry == null) {
+            return -1;
+        }
+        for (int unitIndex = 0; unitIndex < units.size(); unitIndex++) {
+            for (EmiBookmarkEntry member : units.get(unitIndex)) {
+                if (member == entry) {
+                    return unitIndex;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static List<EmiBookmarkEntry> flattenUnits(List<List<EmiBookmarkEntry>> units) {
+        List<EmiBookmarkEntry> flattened = new ArrayList<>();
+        for (List<EmiBookmarkEntry> unit : units) {
+            flattened.addAll(unit);
+        }
+        return flattened;
+    }
+
     private void reorderEntries(List<EmiBookmarkEntry> orderedEntries) {
         Set<EmiBookmarkEntry> orderedSet = Collections.newSetFromMap(new IdentityHashMap<>());
         orderedSet.addAll(orderedEntries);
@@ -688,6 +922,35 @@ public final class EmiBookmarkManager {
         }
         for (int i = 0; i < left.size(); i++) {
             if (left.get(i) != right.get(i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean sameIdentitySet(List<EmiBookmarkEntry> left, List<EmiBookmarkEntry> right) {
+        if (left == null || right == null || left.size() != right.size()) {
+            return false;
+        }
+        Set<EmiBookmarkEntry> uniqueLeft = Collections.newSetFromMap(new IdentityHashMap<>());
+        uniqueLeft.addAll(left);
+        if (uniqueLeft.size() != left.size()) {
+            return false;
+        }
+        for (EmiBookmarkEntry entry : right) {
+            if (!uniqueLeft.remove(entry)) {
+                return false;
+            }
+        }
+        return uniqueLeft.isEmpty();
+    }
+
+    private static boolean sameIdentityOrder(List<?> left, List<?> right) {
+        if (left == null || right == null || left.size() != right.size()) {
+            return false;
+        }
+        for (int index = 0; index < left.size(); index++) {
+            if (left.get(index) != right.get(index)) {
                 return false;
             }
         }
@@ -723,9 +986,40 @@ public final class EmiBookmarkManager {
         }
     }
 
-    public record FavoriteSyncResult(List<Object> handlesToPrune, int removedEntryCount) {
+    public record FavoriteSyncResult(List<Object> handlesToPrune, int removedEntryCount, List<Object> reorderedHandles) {
         public FavoriteSyncResult {
             handlesToPrune = handlesToPrune == null ? List.of() : List.copyOf(handlesToPrune);
+            reorderedHandles = reorderedHandles == null ? List.of() : List.copyOf(reorderedHandles);
+        }
+    }
+
+    private record EntryMove(EmiBookmarkEntry entry, int targetIndex) {
+    }
+
+    private record RecipeUnitLayout(List<List<EmiBookmarkEntry>> units,
+                                    Map<EmiBookmarkEntry, List<EmiBookmarkEntry>> unitByEntry) {
+        private RecipeUnitLayout {
+            units = units == null ? List.of() : List.copyOf(units);
+            unitByEntry = unitByEntry == null ? Map.of() : Map.copyOf(unitByEntry);
+        }
+    }
+
+    private record OrderNormalizationResult(List<EmiBookmarkEntry> orderedEntries,
+                                            List<Object> orderedHandles,
+                                            boolean changed) {
+        private OrderNormalizationResult {
+            orderedEntries = orderedEntries == null ? List.of() : List.copyOf(orderedEntries);
+            orderedHandles = orderedHandles == null ? List.of() : List.copyOf(orderedHandles);
+        }
+
+        private static OrderNormalizationResult unchanged(List<EmiBookmarkEntry> orderedEntries,
+                                                          List<Object> orderedHandles) {
+            return new OrderNormalizationResult(orderedEntries, orderedHandles, false);
+        }
+
+        private static OrderNormalizationResult changed(List<EmiBookmarkEntry> orderedEntries,
+                                                        List<Object> orderedHandles) {
+            return new OrderNormalizationResult(orderedEntries, orderedHandles, true);
         }
     }
 }

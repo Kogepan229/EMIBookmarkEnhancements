@@ -447,6 +447,54 @@ public final class EmiRuntimeAccess {
         return removedCount;
     }
 
+    public static boolean reorderFavoriteHandles(List<Object> orderedHandles) {
+        if (orderedHandles == null || orderedHandles.isEmpty() || !resolveFavoriteMutationHandles()) {
+            return false;
+        }
+        try {
+            Object value = favoritesField.get(null);
+            if (!(value instanceof List<?> list)) {
+                return false;
+            }
+
+            @SuppressWarnings("unchecked")
+            List<Object> favorites = (List<Object>) list;
+            if (favorites.size() != orderedHandles.size()) {
+                return false;
+            }
+            if (sameIdentityOrder(favorites, orderedHandles)) {
+                return false;
+            }
+
+            SetByIdentity<Object> currentSet = SetByIdentity.of(favorites);
+            for (Object handle : orderedHandles) {
+                if (!currentSet.contains(handle)) {
+                    return false;
+                }
+            }
+            SetByIdentity<Object> orderedSet = SetByIdentity.of(orderedHandles);
+            for (Object handle : favorites) {
+                if (!orderedSet.contains(handle)) {
+                    return false;
+                }
+            }
+
+            favorites.clear();
+            favorites.addAll(orderedHandles);
+
+            try {
+                persistentSaveMethod.invoke(null);
+            } catch (Exception e) {
+                EmiBookmarkEnhancements.LOGGER.debug("Failed to save EMI persistent data after favorite reorder", e);
+            }
+            refreshFavoritesSidebar();
+            return true;
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to reorder EMI favorite handles", e);
+            return false;
+        }
+    }
+
     public static void refreshFavoritesSidebar() {
         if (!resolveFavoriteMutationHandles()) {
             return;
@@ -649,7 +697,20 @@ public final class EmiRuntimeAccess {
 
                     if (space == mainSpace) {
                         int stackCount = getScreenSpaceStackCount(space);
-                        panelPlan = buildFavoritePagePlan(baseWidths, safeMaxColumns, normalizedBreakpoints, stackCount);
+                        int maxNaturalPageSize = Math.max(1, sumClampedWidths(baseWidths, safeMaxColumns));
+                        int stablePageSize = resolveStableFavoritePageSize(
+                                space,
+                                baseWidths,
+                                safeMaxColumns,
+                                normalizedBreakpoints,
+                                stackCount,
+                                maxNaturalPageSize);
+                        panelPlan = buildFavoritePagePlan(
+                                baseWidths,
+                                safeMaxColumns,
+                                normalizedBreakpoints,
+                                stackCount,
+                                stablePageSize);
                         favoritePagePlans.put(panel, panelPlan);
                         seenPanels.add(panel);
                     } else if (panelPlan == null) {
@@ -1191,28 +1252,25 @@ public final class EmiRuntimeAccess {
     private static FavoritePagePlan buildFavoritePagePlan(int[] baseWidths,
                                                           int maxColumns,
                                                           List<Integer> breakpoints,
-                                                          int stackCount) {
+                                                          int stackCount,
+                                                          int fixedPageSize) {
         int safeStackCount = Math.max(0, stackCount);
         int fallback = Math.max(1, countPositiveRows(baseWidths, maxColumns));
+        int safeFixedPageSize = Math.max(1, fixedPageSize);
         List<Integer> starts = new ArrayList<>();
         List<Integer> sizes = new ArrayList<>();
 
         if (safeStackCount == 0) {
             starts.add(0);
-            sizes.add(fallback);
+            sizes.add(Math.max(fallback, safeFixedPageSize));
             return new FavoritePagePlan(starts, sizes);
         }
 
         int start = 0;
         while (start < safeStackCount) {
-            int naturalCapacity = computeNaturalCapacityForStart(baseWidths, maxColumns, breakpoints, start);
-            if (naturalCapacity <= 0) {
-                naturalCapacity = fallback;
-            }
-            int pageSize = Math.max(1, Math.min(naturalCapacity, safeStackCount - start));
             starts.add(start);
-            sizes.add(pageSize);
-            start += pageSize;
+            sizes.add(safeFixedPageSize);
+            start += safeFixedPageSize;
         }
         return new FavoritePagePlan(starts, sizes);
     }
@@ -1457,6 +1515,18 @@ public final class EmiRuntimeAccess {
             case "BOTTOM" -> bottomSidebarSizeField;
             default -> null;
         };
+    }
+
+    private static boolean sameIdentityOrder(List<?> left, List<?> right) {
+        if (left == null || right == null || left.size() != right.size()) {
+            return false;
+        }
+        for (int i = 0; i < left.size(); i++) {
+            if (left.get(i) != right.get(i)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private record FavoritePagePlan(List<Integer> starts, List<Integer> sizes) {

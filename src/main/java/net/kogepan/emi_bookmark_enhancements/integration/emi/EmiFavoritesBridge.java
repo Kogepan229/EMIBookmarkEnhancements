@@ -57,6 +57,14 @@ public final class EmiFavoritesBridge {
             if (removed > 0) {
                 List<Object> refreshedFavorites = EmiRuntimeAccess.getFavoriteHandles();
                 lastSignature = computeSignature(refreshedFavorites);
+                syncResult = bookmarkManager.synchronizeFavorites(toFavoriteHandleData(refreshedFavorites));
+            }
+        }
+
+        if (!syncResult.reorderedHandles().isEmpty()) {
+            if (EmiRuntimeAccess.reorderFavoriteHandles(syncResult.reorderedHandles())) {
+                List<Object> refreshedFavorites = EmiRuntimeAccess.getFavoriteHandles();
+                lastSignature = computeSignature(refreshedFavorites);
                 bookmarkManager.synchronizeFavorites(toFavoriteHandleData(refreshedFavorites));
             }
         }
