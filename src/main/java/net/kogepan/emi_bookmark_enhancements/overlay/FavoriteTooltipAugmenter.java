@@ -42,9 +42,7 @@ public final class FavoriteTooltipAugmenter {
         if (entry == null) {
             String itemKey = EmiIngredientKeyHelper.toItemKey(hovered.getStack());
             if (!itemKey.isBlank()) {
-                EmiBookmarkEntry.EntryType type = hovered.getRecipeContext() == null
-                        ? EmiBookmarkEntry.EntryType.ITEM
-                        : EmiBookmarkEntry.EntryType.RESULT;
+                EmiBookmarkEntry.EntryType type = EmiBookmarkEntry.EntryType.ITEM;
                 entry = bookmarkManager.findEntry(EmiBookmarkManager.DEFAULT_GROUP_ID, itemKey, type);
             }
         }

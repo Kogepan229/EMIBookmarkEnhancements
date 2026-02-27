@@ -623,22 +623,44 @@ public final class EmiBookmarkManager {
         if (strict != null) {
             return strict;
         }
-        return findRebindCandidate(availableEntries, favorite, false);
+        if (favorite.hasRecipeContext() && favorite.type() == EmiBookmarkEntry.EntryType.ITEM) {
+            EmiBookmarkEntry strictResult = findRebindCandidate(availableEntries, favorite,
+                    EmiBookmarkEntry.EntryType.RESULT, true);
+            if (strictResult != null) {
+                return strictResult;
+            }
+        }
+        EmiBookmarkEntry loose = findRebindCandidate(availableEntries, favorite, false);
+        if (loose != null) {
+            return loose;
+        }
+        if (favorite.hasRecipeContext() && favorite.type() == EmiBookmarkEntry.EntryType.ITEM) {
+            return findRebindCandidate(availableEntries, favorite, EmiBookmarkEntry.EntryType.RESULT, false);
+        }
+        return null;
     }
 
     private static EmiBookmarkEntry findRebindCandidate(List<EmiBookmarkEntry> availableEntries,
                                                         FavoriteHandleData favorite,
+                                                        EmiBookmarkEntry.EntryType expectedType,
                                                         boolean strictFactor) {
         for (EmiBookmarkEntry candidate : availableEntries) {
-            if (isRebindCompatible(candidate, favorite, strictFactor)) {
+            if (isRebindCompatible(candidate, favorite, expectedType, strictFactor)) {
                 return candidate;
             }
         }
         return null;
     }
 
+    private static EmiBookmarkEntry findRebindCandidate(List<EmiBookmarkEntry> availableEntries,
+                                                        FavoriteHandleData favorite,
+                                                        boolean strictFactor) {
+        return findRebindCandidate(availableEntries, favorite, favorite.type(), strictFactor);
+    }
+
     private static boolean isRebindCompatible(EmiBookmarkEntry candidate,
                                               FavoriteHandleData favorite,
+                                              EmiBookmarkEntry.EntryType expectedType,
                                               boolean strictFactor) {
         if (candidate == null) {
             return false;
@@ -649,11 +671,17 @@ public final class EmiBookmarkManager {
         if (strictFactor && candidate.getFactor() != favorite.factor()) {
             return false;
         }
-        return switch (favorite.type()) {
+        return switch (expectedType) {
             case RESULT -> candidate.isResult();
             case INGREDIENT -> candidate.isIngredient();
             case ITEM -> !candidate.isResult();
         };
+    }
+
+    private static boolean isRebindCompatible(EmiBookmarkEntry candidate,
+                                              FavoriteHandleData favorite,
+                                              boolean strictFactor) {
+        return isRebindCompatible(candidate, favorite, favorite.type(), strictFactor);
     }
 
     private List<EmiBookmarkEntry> getRecipeUnitEntries(EmiBookmarkEntry resultEntry) {
@@ -838,7 +866,29 @@ public final class EmiBookmarkManager {
                 return new EntryMove(before.get(lastMismatch), firstMismatch);
             }
         }
-        return null;
+
+        Map<EmiBookmarkEntry, Integer> beforeIndex = new IdentityHashMap<>();
+        for (int index = 0; index < before.size(); index++) {
+            beforeIndex.put(before.get(index), index);
+        }
+        EntryMove best = null;
+        int bestDistance = 0;
+        for (int index = 0; index < after.size(); index++) {
+            EmiBookmarkEntry entry = after.get(index);
+            Integer previousIndex = beforeIndex.get(entry);
+            if (previousIndex == null) {
+                return null;
+            }
+            int distance = Math.abs(previousIndex - index);
+            if (distance > bestDistance) {
+                bestDistance = distance;
+                best = new EntryMove(entry, index);
+            }
+        }
+        if (bestDistance <= 0) {
+            return null;
+        }
+        return best;
     }
 
     private static RecipeUnitLayout buildRecipeUnitLayout(List<EmiBookmarkEntry> orderedEntries) {
@@ -979,7 +1029,11 @@ public final class EmiBookmarkManager {
         return max;
     }
 
-    public record FavoriteHandleData(Object handle, String itemKey, long factor, EmiBookmarkEntry.EntryType type) {
+    public record FavoriteHandleData(Object handle,
+                                     String itemKey,
+                                     long factor,
+                                     EmiBookmarkEntry.EntryType type,
+                                     boolean hasRecipeContext) {
         public FavoriteHandleData {
             factor = Math.max(1L, factor);
             type = type == null ? EmiBookmarkEntry.EntryType.ITEM : type;

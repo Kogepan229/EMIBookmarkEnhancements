@@ -48,9 +48,7 @@ public final class FavoriteScrollHandler {
             return;
         }
 
-        EmiBookmarkEntry.EntryType type = hovered.getRecipeContext() == null
-                ? EmiBookmarkEntry.EntryType.ITEM
-                : EmiBookmarkEntry.EntryType.RESULT;
+        EmiBookmarkEntry.EntryType type = EmiBookmarkEntry.EntryType.ITEM;
         EmiBookmarkEntry entry = bookmarkManager.findEntry(ingredient);
         if (entry == null) {
             entry = bookmarkManager.findEntry(EmiBookmarkManager.DEFAULT_GROUP_ID, itemKey, type);

@@ -83,11 +83,14 @@ public final class EmiFavoritesBridge {
             }
 
             long factor = EmiIngredientKeyHelper.toBaseAmount(ingredient);
-            EmiBookmarkEntry.EntryType type = EmiRuntimeAccess.hasRecipeContext(favoriteHandle)
-                    ? EmiBookmarkEntry.EntryType.RESULT
-                    : EmiBookmarkEntry.EntryType.ITEM;
+            boolean hasRecipeContext = EmiRuntimeAccess.hasRecipeContext(favoriteHandle);
+            EmiBookmarkEntry.EntryType type = EmiBookmarkEntry.EntryType.ITEM;
+            EmiBookmarkEntry boundEntry = bookmarkManager.findEntry(favoriteHandle);
+            if (boundEntry != null) {
+                type = boundEntry.getType();
+            }
             synchronizedFavorites.add(new EmiBookmarkManager.FavoriteHandleData(
-                    favoriteHandle, itemKey, factor, type));
+                    favoriteHandle, itemKey, factor, type, hasRecipeContext));
         }
         return synchronizedFavorites;
     }
