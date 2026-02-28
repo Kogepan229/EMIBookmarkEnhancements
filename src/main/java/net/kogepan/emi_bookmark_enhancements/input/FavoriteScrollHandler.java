@@ -3,6 +3,7 @@ package net.kogepan.emi_bookmark_enhancements.input;
 import dev.emi.emi.api.stack.EmiIngredient;
 import dev.emi.emi.api.stack.EmiStackInteraction;
 import net.kogepan.emi_bookmark_enhancements.bookmark.model.EmiBookmarkEntry;
+import net.kogepan.emi_bookmark_enhancements.bookmark.model.EmiBookmarkGroup;
 import net.kogepan.emi_bookmark_enhancements.bookmark.service.EmiBookmarkManager;
 import net.kogepan.emi_bookmark_enhancements.integration.emi.EmiIngredientKeyHelper;
 import net.kogepan.emi_bookmark_enhancements.integration.emi.EmiRuntimeAccess;
@@ -61,6 +62,13 @@ public final class FavoriteScrollHandler {
                         ingredient);
             } else {
                 bookmarkManager.linkFavorite(ingredient, entry);
+            }
+        }
+        if (entry.isIngredient()) {
+            EmiBookmarkGroup group = bookmarkManager.getGroup(entry.getGroupId());
+            if (group != null && group.isCraftingChainEnabled()) {
+                event.setCanceled(true);
+                return;
             }
         }
 
