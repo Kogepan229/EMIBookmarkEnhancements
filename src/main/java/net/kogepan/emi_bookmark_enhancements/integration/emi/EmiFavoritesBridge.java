@@ -31,6 +31,13 @@ public final class EmiFavoritesBridge {
         return bookmarkManager;
     }
 
+    public static void synchronizeNow() {
+        synchronizeFromEmi();
+        if (bookmarkManager != null && bookmarkManager.isDirty()) {
+            bookmarkManager.save();
+        }
+    }
+
     private static void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) {
             return;

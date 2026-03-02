@@ -138,6 +138,19 @@ public final class EmiRuntimeAccess {
         return false;
     }
 
+    public static boolean isRuntimeFavoriteHandle(Object candidate) {
+        if (candidate == null) {
+            return false;
+        }
+        List<Object> favorites = getFavoriteHandles();
+        for (Object favorite : favorites) {
+            if (favorite == candidate) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static boolean hasRecipeContext(Object favoriteHandle) {
         if (favoriteHandle == null) {
             return false;

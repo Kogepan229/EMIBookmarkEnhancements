@@ -3,6 +3,7 @@ package net.kogepan.emi_bookmark_enhancements.integration.emi;
 import net.kogepan.emi_bookmark_enhancements.bookmark.persistence.BookmarkStore;
 import net.kogepan.emi_bookmark_enhancements.bookmark.persistence.LayoutStore;
 import net.kogepan.emi_bookmark_enhancements.bookmark.service.EmiBookmarkManager;
+import net.kogepan.emi_bookmark_enhancements.input.FavoriteShortcutHandler;
 import net.kogepan.emi_bookmark_enhancements.input.FavoriteScrollHandler;
 import net.kogepan.emi_bookmark_enhancements.input.RecipeShortcutHandler;
 import net.kogepan.emi_bookmark_enhancements.overlay.FavoriteQuantityOverlay;
@@ -36,6 +37,7 @@ public final class ClientLifecycleHooks {
             BOOKMARK_MANAGER.ensureLoaded();
             LayoutModeController.register(LAYOUT_STORE);
             EmiFavoritesBridge.initialize(BOOKMARK_MANAGER);
+            FavoriteShortcutHandler.register();
             FavoriteScrollHandler.register(BOOKMARK_MANAGER);
             RecipeShortcutHandler.register(BOOKMARK_MANAGER);
             FavoriteQuantityOverlay.register(BOOKMARK_MANAGER);
