@@ -30,7 +30,10 @@ public final class RecipeFavoriteHelper {
     private RecipeFavoriteHelper() {
     }
 
-    public static boolean addRecipeToFavorites(EmiRecipe recipe, boolean createNewGroup, EmiBookmarkManager bookmarkManager) {
+    public static boolean addRecipeToFavorites(EmiRecipe recipe,
+                                               EmiIngredient preferredResult,
+                                               boolean createNewGroup,
+                                               EmiBookmarkManager bookmarkManager) {
         if (recipe == null || bookmarkManager == null || recipe.getOutputs().isEmpty()) {
             return false;
         }
@@ -39,7 +42,7 @@ public final class RecipeFavoriteHelper {
         }
 
         int groupId = createNewGroup ? bookmarkManager.createGroup() : EmiBookmarkManager.DEFAULT_GROUP_ID;
-        List<PlannedFavorite> plannedFavorites = buildPlannedFavorites(recipe, groupId);
+        List<PlannedFavorite> plannedFavorites = buildPlannedFavorites(recipe, preferredResult, groupId);
         if (plannedFavorites.isEmpty()) {
             if (createNewGroup) {
                 bookmarkManager.removeGroup(groupId);
@@ -91,23 +94,25 @@ public final class RecipeFavoriteHelper {
         return true;
     }
 
-    private static List<PlannedFavorite> buildPlannedFavorites(EmiRecipe recipe, int groupId) {
+    private static List<PlannedFavorite> buildPlannedFavorites(EmiRecipe recipe,
+                                                               EmiIngredient preferredResult,
+                                                               int groupId) {
         List<PlannedFavorite> planned = new ArrayList<>();
         List<EmiStack> outputs = recipe.getOutputs();
         if (outputs.isEmpty()) {
             return planned;
         }
 
-        EmiStack primaryOutput = outputs.get(0);
-        if (!primaryOutput.isEmpty()) {
-            String outputKey = EmiIngredientKeyHelper.toItemKey(primaryOutput);
+        EmiStack selectedOutput = selectResultOutput(outputs, preferredResult);
+        if (selectedOutput != null && !selectedOutput.isEmpty()) {
+            String outputKey = EmiIngredientKeyHelper.toItemKey(selectedOutput);
             if (!outputKey.isBlank()) {
                 planned.add(new PlannedFavorite(
                         groupId,
                         outputKey,
-                        EmiIngredientKeyHelper.toBaseAmount(primaryOutput),
+                        EmiIngredientKeyHelper.toBaseAmount(selectedOutput),
                         EmiBookmarkEntry.EntryType.RESULT,
-                        primaryOutput.copy(),
+                        selectedOutput.copy(),
                         recipe));
             }
         }
@@ -145,6 +150,41 @@ public final class RecipeFavoriteHelper {
                     null));
         }
         return planned;
+    }
+
+    private static EmiStack selectResultOutput(List<EmiStack> outputs, EmiIngredient preferredResult) {
+        if (outputs == null || outputs.isEmpty()) {
+            return EmiStack.EMPTY;
+        }
+        if (preferredResult != null && !preferredResult.isEmpty()) {
+            String preferredKey = EmiIngredientKeyHelper.toItemKey(preferredResult);
+            for (EmiStack output : outputs) {
+                if (matchesPreferredOutput(output, preferredResult, preferredKey)) {
+                    return output;
+                }
+            }
+        }
+        for (EmiStack output : outputs) {
+            if (output != null && !output.isEmpty()) {
+                return output;
+            }
+        }
+        return EmiStack.EMPTY;
+    }
+
+    private static boolean matchesPreferredOutput(EmiStack output, EmiIngredient preferredResult, String preferredKey) {
+        if (output == null || output.isEmpty() || preferredResult == null || preferredResult.isEmpty()) {
+            return false;
+        }
+        if (EmiIngredient.areEqual(output, preferredResult)) {
+            return true;
+        }
+        for (EmiStack preferredStack : preferredResult.getEmiStacks()) {
+            if (preferredStack != null && !preferredStack.isEmpty() && output.isEqual(preferredStack)) {
+                return true;
+            }
+        }
+        return !preferredKey.isBlank() && preferredKey.equals(EmiIngredientKeyHelper.toItemKey(output));
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

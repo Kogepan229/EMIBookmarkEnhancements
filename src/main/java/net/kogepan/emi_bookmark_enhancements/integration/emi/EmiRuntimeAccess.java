@@ -2,6 +2,7 @@ package net.kogepan.emi_bookmark_enhancements.integration.emi;
 
 import dev.emi.emi.api.recipe.EmiRecipe;
 import dev.emi.emi.api.stack.EmiIngredient;
+import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.api.stack.EmiStackInteraction;
 import net.kogepan.emi_bookmark_enhancements.EmiBookmarkEnhancements;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
@@ -44,6 +45,7 @@ public final class EmiRuntimeAccess {
     private static Class<?> recipeScreenClass;
     private static Class<?> widgetGroupClass;
     private static Field recipeScreenCurrentPageField;
+    private static Method recipeScreenGetHoveredStackMethod;
     private static Field widgetGroupRecipeField;
     private static Method widgetGroupXMethod;
     private static Method widgetGroupYMethod;
@@ -201,6 +203,24 @@ public final class EmiRuntimeAccess {
             EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve hovered recipe", e);
         }
         return null;
+    }
+
+    public static EmiIngredient getHoveredRecipeStack(Object screen) {
+        if (screen == null || !resolveRecipeHandles()) {
+            return EmiStack.EMPTY;
+        }
+        if (!recipeScreenClass.isInstance(screen)) {
+            return EmiStack.EMPTY;
+        }
+        try {
+            Object value = recipeScreenGetHoveredStackMethod.invoke(screen);
+            if (value instanceof EmiIngredient ingredient) {
+                return ingredient;
+            }
+        } catch (Exception e) {
+            EmiBookmarkEnhancements.LOGGER.debug("Failed to resolve hovered recipe stack", e);
+        }
+        return EmiStack.EMPTY;
     }
 
     public static List<FavoriteSlot> getVisibleFavoriteSlots() {
@@ -825,6 +845,7 @@ public final class EmiRuntimeAccess {
         if (recipeScreenClass != null
                 && widgetGroupClass != null
                 && recipeScreenCurrentPageField != null
+                && recipeScreenGetHoveredStackMethod != null
                 && widgetGroupRecipeField != null
                 && widgetGroupXMethod != null
                 && widgetGroupYMethod != null
@@ -841,6 +862,7 @@ public final class EmiRuntimeAccess {
 
             recipeScreenCurrentPageField = recipeScreenClass.getDeclaredField("currentPage");
             recipeScreenCurrentPageField.setAccessible(true);
+            recipeScreenGetHoveredStackMethod = recipeScreenClass.getMethod("getHoveredStack");
 
             widgetGroupRecipeField = widgetGroupClass.getDeclaredField("recipe");
             widgetGroupRecipeField.setAccessible(true);

@@ -1,6 +1,7 @@
 package net.kogepan.emi_bookmark_enhancements.input;
 
 import dev.emi.emi.api.recipe.EmiRecipe;
+import dev.emi.emi.api.stack.EmiIngredient;
 import dev.emi.emi.api.stack.EmiStackInteraction;
 import net.kogepan.emi_bookmark_enhancements.bookmark.service.EmiBookmarkManager;
 import net.kogepan.emi_bookmark_enhancements.integration.emi.EmiRuntimeAccess;
@@ -36,21 +37,31 @@ public final class RecipeShortcutHandler {
 
         int mouseX = EmiRuntimeAccess.getLastMouseX();
         int mouseY = EmiRuntimeAccess.getLastMouseY();
+        EmiIngredient hoveredResultCandidate = EmiRuntimeAccess.getHoveredRecipeStack(event.getScreen());
         EmiStackInteraction hovered = EmiRuntimeAccess.getHoveredStack(mouseX, mouseY, true);
         EmiRecipe recipe = hovered.getRecipeContext();
+        if (hoveredResultCandidate.isEmpty()) {
+            hoveredResultCandidate = hovered.getStack();
+        }
         if (recipe == null) {
             recipe = EmiRuntimeAccess.getHoveredRecipe(event.getScreen(), mouseX, mouseY);
         }
-        if (recipe == null) {
-            EmiStackInteraction clickHovered = EmiRuntimeAccess.getHoveredStack(mouseX, mouseY, false);
-            recipe = clickHovered.getRecipeContext();
+        EmiStackInteraction clickHovered = EmiStackInteraction.EMPTY;
+        if (recipe == null || hoveredResultCandidate.isEmpty()) {
+            clickHovered = EmiRuntimeAccess.getHoveredStack(mouseX, mouseY, false);
+            if (recipe == null) {
+                recipe = clickHovered.getRecipeContext();
+            }
+            if (hoveredResultCandidate.isEmpty()) {
+                hoveredResultCandidate = clickHovered.getStack();
+            }
         }
         if (recipe == null) {
             return;
         }
 
         boolean createNewGroup = Screen.hasControlDown();
-        if (RecipeFavoriteHelper.addRecipeToFavorites(recipe, createNewGroup, bookmarkManager)) {
+        if (RecipeFavoriteHelper.addRecipeToFavorites(recipe, hoveredResultCandidate, createNewGroup, bookmarkManager)) {
             bookmarkManager.save();
             event.setCanceled(true);
         }
