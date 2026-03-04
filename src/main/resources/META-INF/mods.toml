@@ -61,3 +61,10 @@ mandatory = true
 versionRange = "${minecraft_version_range}"
 ordering = "NONE"
 side = "BOTH"
+
+[[dependencies."${mod_id}"]]
+modId = "emi"
+mandatory = true
+versionRange = "[1.1.22,)"
+ordering = "AFTER"
+side = "CLIENT"
