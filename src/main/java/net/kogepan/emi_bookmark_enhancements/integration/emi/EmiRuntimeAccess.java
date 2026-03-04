@@ -430,6 +430,18 @@ public final class EmiRuntimeAccess {
         return plan.sizeForPage(page);
     }
 
+    public static boolean hasCustomFavoriteDisplayPlan(Object panel) {
+        return panel != null && favoritePagePlans.containsKey(panel);
+    }
+
+    public static int toFavoriteDisplayGlobalIndex(Object panel, int page, int localIndex, int fallbackGlobalIndex) {
+        FavoritePagePlan plan = favoritePagePlans.get(panel);
+        if (plan == null) {
+            return Math.max(0, fallbackGlobalIndex);
+        }
+        return Math.max(0, plan.startForPage(page) + Math.max(0, localIndex));
+    }
+
     public static int clampFavoriteDisplayPage(Object panel, int page) {
         FavoritePagePlan plan = favoritePagePlans.get(panel);
         if (plan == null) {
@@ -1303,9 +1315,13 @@ public final class EmiRuntimeAccess {
 
         int start = 0;
         while (start < safeStackCount) {
+            int naturalCapacity = Math.max(
+                    fallback,
+                    computeNaturalCapacityForStart(baseWidths, maxColumns, breakpoints, start));
+            int pageSize = Math.max(1, Math.min(naturalCapacity, safeStackCount - start));
             starts.add(start);
-            sizes.add(safeFixedPageSize);
-            start += safeFixedPageSize;
+            sizes.add(pageSize);
+            start += pageSize;
         }
         return new FavoritePagePlan(starts, sizes);
     }

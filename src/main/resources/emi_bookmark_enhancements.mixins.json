@@ -6,6 +6,7 @@
   "client": [
     "EmiFavoriteRenderMixin",
     "EmiRenderHelperTooltipMixin",
+    "EmiScreenManagerFavoritePagingMixin",
     "EmiSidebarPanelPagingMixin"
   ],
   "injectors": {
